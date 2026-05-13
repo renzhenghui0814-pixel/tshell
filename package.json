@@ -5,6 +5,7 @@
   "version": "0.1.1",
   "publisher": "tora-zhren",
   "license": "MIT",
+  "icon": "media/tshell.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/renzhenghui0814-pixel/tshell.git"
