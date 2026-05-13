@@ -1,0 +1,10 @@
+.vscode/**
+.vscode-test/**
+src/**
+tsconfig.json
+*.map
+dist/**/*.map
+.gitignore
+node_modules/@types/**
+node_modules/typescript/**
+.npm-cache/**

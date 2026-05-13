@@ -1,0 +1,77 @@
+{
+  "name": "tshell",
+  "displayName": "tshell",
+  "description": "SSH/SFTP client for running Linux commands and transferring files without server-side setup.",
+  "version": "0.1.0",
+  "publisher": "tora-zhren",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:tshell.view",
+    "onCommand:tshell.focus"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tshell.focus",
+        "title": "tshell: Open"
+      },
+      {
+        "command": "tshell.openConfig",
+        "title": "tshell: Open Config File"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tshell",
+          "title": "tshell",
+          "icon": "media/ssh.svg"
+        }
+      ]
+    },
+    "views": {
+      "tshell": [
+        {
+          "id": "tshell.view",
+          "name": "tshell",
+          "type": "webview"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "tshell.openConfig",
+          "when": "view == tshell.view",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "iconv-lite": "^0.7.2",
+    "ssh2": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/ssh2": "^1.15.5",
+    "@types/vscode": "^1.92.0",
+    "@vscode/vsce": "^3.2.1",
+    "typescript": "^5.5.4"
+  }
+}
