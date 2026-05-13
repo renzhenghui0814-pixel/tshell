@@ -10,6 +10,7 @@ type TerminalEncoding = 'utf-8' | 'gb18030';
 type PreviewEncoding = 'utf8' | 'gb2312';
 type RemoteEntryType = 'file' | 'directory' | 'symlink' | 'other';
 type Language = 'zh-CN' | 'en-US';
+type AuthType = 'password' | 'privateKey';
 
 interface ServerConfig {
   id: string;
@@ -18,7 +19,16 @@ interface ServerConfig {
   port: number;
   username: string;
   encoding: TerminalEncoding;
+  authType: AuthType;
   encryptedPassword?: string;
+  privateKeyPath?: string;
+  encryptedPrivateKeyPassphrase?: string;
+}
+
+interface ResolvedAuth {
+  password?: string;
+  privateKey?: Buffer;
+  passphrase?: string;
 }
 
 interface ServerGroup {
@@ -150,6 +160,16 @@ class ConfigStore {
               }
             }
           }
+          if (server.encryptedPrivateKeyPassphrase) {
+            const passphrase = this.decryptPassword(server.encryptedPrivateKeyPassphrase);
+            if (passphrase) {
+              const normalizedPassphrase = this.encryptPassword(passphrase);
+              if (normalizedPassphrase !== server.encryptedPrivateKeyPassphrase) {
+                server.encryptedPrivateKeyPassphrase = normalizedPassphrase;
+                changed = true;
+              }
+            }
+          }
         }
       }
       if (changed) {
@@ -270,10 +290,10 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
           await this.requestDeleteServer(config, String(message.groupId), String(message.serverId));
           break;
         case 'addServer':
-          await this.addServer(config, String(message.groupId), message.server as Partial<ServerConfig>, String(message.password ?? ''));
+          await this.addServer(config, String(message.groupId), message.server as Partial<ServerConfig>, String(message.password ?? ''), String(message.privateKeyPassphrase ?? ''));
           break;
         case 'updateServer':
-          await this.updateServer(config, String(message.groupId), message.server as Partial<ServerConfig>, String(message.password ?? ''));
+          await this.updateServer(config, String(message.groupId), message.server as Partial<ServerConfig>, String(message.password ?? ''), String(message.privateKeyPassphrase ?? ''));
           break;
         case 'deleteServer':
           await this.deleteServer(config, String(message.groupId), String(message.serverId));
@@ -307,17 +327,23 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     return server;
   }
 
-  private async addServer(config: AppConfig, groupId: string, input: Partial<ServerConfig>, password: string): Promise<void> {
+  private async addServer(config: AppConfig, groupId: string, input: Partial<ServerConfig>, password: string, privateKeyPassphrase: string): Promise<void> {
     const group = this.findGroup(config.groups, groupId);
     const server = normalizeServer({ ...input, id: makeId() });
-    if (password) {
+    if (server.authType === 'password' && password) {
       server.encryptedPassword = this.configStore.encryptPassword(password);
+    }
+    if (server.authType === 'privateKey') {
+      this.validatePrivateKeyServer(config.settings.language, server);
+      if (privateKeyPassphrase) {
+        server.encryptedPrivateKeyPassphrase = this.configStore.encryptPassword(privateKeyPassphrase);
+      }
     }
     group.servers.push(server);
     await this.configStore.save(config);
   }
 
-  private async updateServer(config: AppConfig, groupId: string, input: Partial<ServerConfig>, password: string): Promise<void> {
+  private async updateServer(config: AppConfig, groupId: string, input: Partial<ServerConfig>, password: string, privateKeyPassphrase: string): Promise<void> {
     const group = this.findGroup(config.groups, groupId);
     const index = group.servers.findIndex((item) => item.id === input.id);
     if (index < 0) {
@@ -325,9 +351,23 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     }
     const existing = group.servers[index];
     const next = normalizeServer({ ...existing, ...input, id: existing.id });
-    next.encryptedPassword = password ? this.configStore.encryptPassword(password) : undefined;
+    if (next.authType === 'password') {
+      next.encryptedPassword = password ? this.configStore.encryptPassword(password) : undefined;
+      next.privateKeyPath = undefined;
+      next.encryptedPrivateKeyPassphrase = undefined;
+    } else {
+      this.validatePrivateKeyServer(config.settings.language, next);
+      next.encryptedPassword = undefined;
+      next.encryptedPrivateKeyPassphrase = privateKeyPassphrase ? this.configStore.encryptPassword(privateKeyPassphrase) : undefined;
+    }
     group.servers[index] = next;
     await this.configStore.save(config);
+  }
+
+  private validatePrivateKeyServer(language: Language, server: ServerConfig): void {
+    if (server.authType === 'privateKey' && !server.privateKeyPath) {
+      throw new Error(t(language, 'privateKeyRequired'));
+    }
   }
 
   private async deleteServer(config: AppConfig, groupId: string, serverId: string): Promise<void> {
@@ -401,30 +441,45 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
 
   private async openTerminal(config: AppConfig, groupId: string, serverId: string): Promise<void> {
     const server = this.findServer(this.findGroup(config.groups, groupId), serverId);
+    const auth = await this.resolveAuth(config.settings.language, server);
+    new TerminalPage(this.context, server, auth, config.settings);
+  }
+
+  private async resolveAuth(language: Language, server: ServerConfig): Promise<ResolvedAuth> {
+    if (server.authType === 'privateKey') {
+      if (!server.privateKeyPath) {
+        throw new Error(t(language, 'privateKeyRequired'));
+      }
+      const privateKey = await fs.promises.readFile(expandHomePath(server.privateKeyPath));
+      const passphrase = server.encryptedPrivateKeyPassphrase ? this.configStore.decryptPassword(server.encryptedPrivateKeyPassphrase) : '';
+      return passphrase ? { privateKey, passphrase } : { privateKey };
+    }
     let password = server.encryptedPassword ? this.configStore.decryptPassword(server.encryptedPassword) : '';
     if (!password) {
       password = await vscode.window.showInputBox({
-        title: t(config.settings.language, 'passwordRequired'),
+        title: t(language, 'passwordRequired'),
         prompt: `${server.username}@${server.host}`,
         password: true,
         ignoreFocusOut: true
       }) ?? '';
     }
     if (!password) {
-      throw new Error(t(config.settings.language, 'passwordRequired'));
+      throw new Error(t(language, 'passwordRequired'));
     }
-    new TerminalPage(this.context, server, password, config.settings);
+    return { password };
   }
 
   private async postState(): Promise<void> {
     const config = await this.configStore.load();
     const passwords: Record<string, string> = {};
+    const privateKeyPassphrases: Record<string, string> = {};
     for (const group of config.groups) {
       for (const server of group.servers) {
         passwords[server.id] = server.encryptedPassword ? this.configStore.decryptPassword(server.encryptedPassword) : '';
+        privateKeyPassphrases[server.id] = server.encryptedPrivateKeyPassphrase ? this.configStore.decryptPassword(server.encryptedPrivateKeyPassphrase) : '';
       }
     }
-    this.post({ type: 'state', config, groups: config.groups, passwords });
+    this.post({ type: 'state', config, groups: config.groups, passwords, privateKeyPassphrases });
   }
 
   private post(message: Record<string, unknown>): void {
@@ -510,8 +565,17 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       <input id="port" type="number" value="22">
       <label id="usernameLabel" for="username">用户</label>
       <input id="username" placeholder="root / ubuntu">
+      <label id="authTypeLabel" for="authType">认证方式</label>
+      <select id="authType">
+        <option value="password">Password</option>
+        <option value="privateKey">Private Key</option>
+      </select>
       <label id="passwordLabel" for="password">密码</label>
       <input id="password" type="password">
+      <label id="privateKeyPathLabel" for="privateKeyPath">私钥路径</label>
+      <input id="privateKeyPath" placeholder="C:\\Users\\you\\.ssh\\id_rsa">
+      <label id="privateKeyPassphraseLabel" for="privateKeyPassphrase">私钥 Passphrase</label>
+      <input id="privateKeyPassphrase" type="password">
       <label id="encodingLabel" for="encoding">输入输出编码</label>
       <select id="encoding">
         <option value="utf-8">UTF-8</option>
@@ -528,7 +592,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const $ = (id) => document.getElementById(id);
-    let state = { groups: [], passwords: {}, config: { settings: { language: 'en-US', showHiddenFiles: false } } };
+    let state = { groups: [], passwords: {}, privateKeyPassphrases: {}, config: { settings: { language: 'en-US', showHiddenFiles: false } } };
     let selectedServerId = '';
     const icons = { addGroup: '+', addServer: '⊕', renameGroup: '✎', deleteGroup: '🗑', edit: '✎', delete: '🗑' };
     const i18n = {
@@ -548,10 +612,18 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
         port: '端口',
         username: '用户',
         password: '密码',
+        authType: '认证方式',
+        passwordAuth: '密码',
+        privateKeyAuth: '私钥',
+        privateKeyPath: '私钥路径',
+        privateKeyPassphrase: '私钥 Passphrase',
+        editServerAction: '修改服务器',
+        deleteServerAction: '删除服务器',
         encoding: '输入输出编码',
         save: '保存',
         cancel: '取消',
         required: '主机和用户不能为空。',
+        privateKeyRequired: '请填写私钥路径。',
         defaultGroup: '默认分组',
         serverPlaceholder: '生产服务器',
         doubleClickConnect: '双击连接'
@@ -572,10 +644,18 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
         port: 'Port',
         username: 'User',
         password: 'Password',
+        authType: 'Authentication',
+        passwordAuth: 'Password',
+        privateKeyAuth: 'Private Key',
+        privateKeyPath: 'Private Key Path',
+        privateKeyPassphrase: 'Private Key Passphrase',
+        editServerAction: 'Edit Server',
+        deleteServerAction: 'Delete Server',
         encoding: 'Input/Output Encoding',
         save: 'Save',
         cancel: 'Cancel',
         required: 'Host and user are required.',
+        privateKeyRequired: 'Private key path is required.',
         defaultGroup: 'Default Group',
         serverPlaceholder: 'Production Server',
         doubleClickConnect: 'Double-click to connect'
@@ -616,7 +696,12 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       $('hostLabel').textContent = text('host');
       $('portLabel').textContent = text('port');
       $('usernameLabel').textContent = text('username');
+      $('authTypeLabel').textContent = text('authType');
+      $('authType').options[0].textContent = text('passwordAuth');
+      $('authType').options[1].textContent = text('privateKeyAuth');
       $('passwordLabel').textContent = text('password');
+      $('privateKeyPathLabel').textContent = text('privateKeyPath');
+      $('privateKeyPassphraseLabel').textContent = text('privateKeyPassphrase');
       $('encodingLabel').textContent = text('encoding');
       $('saveServer').textContent = text('save');
       $('cancelServer').textContent = text('cancel');
@@ -704,7 +789,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
           };
           const serverActions = document.createElement('div');
           serverActions.className = 'actions-inline';
-          serverActions.append(mini(icons.edit, text('edit'), () => openServerDialog(group.id, server)), mini(icons.delete, text('delete'), () => deleteServer(group, server)));
+          serverActions.append(mini(icons.edit, text('editServerAction'), () => openServerDialog(group.id, server)), mini(icons.delete, text('deleteServerAction'), () => deleteServer(group, server)));
           row.append(icon, main, serverActions);
           children.append(row);
         }
@@ -731,9 +816,23 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       $('host').value = server?.host || '';
       $('port').value = server?.port || 22;
       $('username').value = server?.username || '';
+      $('authType').value = server?.authType || (server?.privateKeyPath ? 'privateKey' : 'password');
       $('password').value = server ? (state.passwords[server.id] || '') : '';
+      $('privateKeyPath').value = server?.privateKeyPath || '';
+      $('privateKeyPassphrase').value = server ? (state.privateKeyPassphrases[server.id] || '') : '';
       $('encoding').value = server?.encoding || 'utf-8';
+      updateAuthFields();
       $('serverModal').classList.add('open');
+    }
+
+    function updateAuthFields() {
+      const privateKey = $('authType').value === 'privateKey';
+      $('passwordLabel').style.display = privateKey ? 'none' : '';
+      $('password').style.display = privateKey ? 'none' : '';
+      $('privateKeyPathLabel').style.display = privateKey ? '' : 'none';
+      $('privateKeyPath').style.display = privateKey ? '' : 'none';
+      $('privateKeyPassphraseLabel').style.display = privateKey ? '' : 'none';
+      $('privateKeyPassphrase').style.display = privateKey ? '' : 'none';
     }
 
     function closeServerDialog() { $('serverModal').classList.remove('open'); }
@@ -772,18 +871,22 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
         host: $('host').value.trim(),
         port: Number($('port').value) || 22,
         username: $('username').value.trim(),
+        authType: $('authType').value,
+        privateKeyPath: $('privateKeyPath').value.trim(),
         encoding: $('encoding').value
       };
       if (!server.host || !server.username) { status(text('required')); return; }
+      if (server.authType === 'privateKey' && !server.privateKeyPath) { status(text('privateKeyRequired')); return; }
       const type = server.id ? 'updateServer' : 'addServer';
-      post(type, { groupId: $('serverGroupId').value, server, password: $('password').value });
+      post(type, { groupId: $('serverGroupId').value, server, password: $('password').value, privateKeyPassphrase: $('privateKeyPassphrase').value });
       closeServerDialog();
     };
+    $('authType').onchange = updateAuthFields;
 
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'state') {
-        state = { config: message.config || {}, groups: message.groups || [], passwords: message.passwords || {} };
+        state = { config: message.config || {}, groups: message.groups || [], passwords: message.passwords || {}, privateKeyPassphrases: message.privateKeyPassphrases || {} };
         status('');
         translateUi();
         render();
@@ -813,7 +916,7 @@ class TerminalPage {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly server: ServerConfig,
-    private readonly password: string,
+    private readonly auth: ResolvedAuth,
     private readonly settings: AppSettings,
     viewColumn: vscode.ViewColumn = vscode.ViewColumn.One,
     title?: string
@@ -861,7 +964,7 @@ class TerminalPage {
   }
 
   private copySession(): void {
-    new TerminalPage(this.context, this.server, this.password, this.settings, vscode.ViewColumn.Beside, TerminalPage.nextTitle(this.baseTitle));
+    new TerminalPage(this.context, this.server, this.auth, this.settings, vscode.ViewColumn.Beside, TerminalPage.nextTitle(this.baseTitle));
   }
 
   private static nextTitle(baseTitle: string): string {
@@ -896,7 +999,7 @@ class TerminalPage {
           this.shell?.setWindow(this.terminalRows, this.terminalCols, 0, 0);
           break;
         case 'openTransfer':
-          new TransferPage(this.context, this.server, this.password, this.settings);
+          new TransferPage(this.context, this.server, this.auth, this.settings);
           break;
         case 'copySession':
           this.copySession();
@@ -965,7 +1068,7 @@ class TerminalPage {
       host: this.server.host,
       port: this.server.port,
       username: this.server.username,
-      password: this.password,
+      ...this.auth,
       readyTimeout: 20000,
       keepaliveInterval: 15000,
       keepaliveCountMax: 3
@@ -1156,7 +1259,7 @@ class TransferPage {
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly server: ServerConfig,
-    private readonly password: string,
+    private readonly auth: ResolvedAuth,
     private readonly settings: AppSettings
   ) {
     this.panel = vscode.window.createWebviewPanel(
@@ -1225,7 +1328,7 @@ class TransferPage {
           host: this.server.host,
           port: this.server.port,
           username: this.server.username,
-          password: this.password,
+          ...this.auth,
           readyTimeout: 20000,
           keepaliveInterval: 15000
         });
@@ -2023,6 +2126,15 @@ class TransferPage {
       note.textContent = text;
       $('code').prepend(note);
     }
+    function resetPreviewScroll() {
+      const code = $('code');
+      code.scrollTop = 0;
+      code.scrollLeft = 0;
+      requestAnimationFrame(() => {
+        code.scrollTop = 0;
+        code.scrollLeft = 0;
+      });
+    }
     function renderPreview(message) {
       const code = $('code');
       if (message.unsupported) {
@@ -2040,6 +2152,7 @@ class TransferPage {
         $('toggleCsvView').style.display = 'none';
         $('previewEncoding').value = currentPreviewEncoding;
         $('preview').classList.add('open');
+        resetPreviewScroll();
         return;
       }
       $('previewTitle').textContent = message.path || message.name || '';
@@ -2057,6 +2170,7 @@ class TransferPage {
       $('previewEncoding').value = currentPreviewEncoding;
       renderTextPreview(currentPreviewContent, currentPreviewLanguage, currentPreviewDone);
       $('preview').classList.add('open');
+      resetPreviewScroll();
     }
     function renderDbfPreview(message) {
       $('previewTitle').textContent = message.path || message.name || '';
@@ -2072,6 +2186,7 @@ class TransferPage {
       $('previewEncoding').value = currentPreviewEncoding;
       $('code').innerHTML = renderDbfTable(message.fields || [], message.rows || []);
       $('preview').classList.add('open');
+      resetPreviewScroll();
     }
     function appendPreviewChunk(message) {
       if (message.path !== currentPreviewPath || message.encoding !== currentPreviewEncoding) return;
@@ -2301,12 +2416,26 @@ function normalizeServer(input: Partial<ServerConfig>): ServerConfig {
     host,
     port: Number(input.port) || 22,
     username,
+    authType: normalizeAuthType(input),
     encoding: normalizeEncoding(input.encoding)
   };
   if (input.encryptedPassword) {
     server.encryptedPassword = input.encryptedPassword;
   }
+  if (input.privateKeyPath) {
+    server.privateKeyPath = safeString(input.privateKeyPath, '');
+  }
+  if (input.encryptedPrivateKeyPassphrase) {
+    server.encryptedPrivateKeyPassphrase = input.encryptedPrivateKeyPassphrase;
+  }
   return server;
+}
+
+function normalizeAuthType(input: Partial<ServerConfig>): AuthType {
+  if (input.authType === 'privateKey' || input.privateKeyPath) {
+    return 'privateKey';
+  }
+  return 'password';
 }
 
 function defaultConfig(): AppConfig {
@@ -2339,6 +2468,16 @@ function vsCodeLanguage(): Language {
   return vscode.env.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
 }
 
+function expandHomePath(value: string): string {
+  if (value === '~') {
+    return os.homedir();
+  }
+  if (value.startsWith('~/') || value.startsWith('~\\')) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
 function t(language: Language, key: string, arg?: string): string {
   const table: Record<Language, Record<string, string>> = {
     'zh-CN': {
@@ -2352,6 +2491,7 @@ function t(language: Language, key: string, arg?: string): string {
       deleteServerConfirm: `确定删除服务器 "${arg ?? ''}"？`,
       defaultGroup: '默认分组',
       passwordRequired: '请输入登录密码',
+      privateKeyRequired: '请填写私钥路径',
       connecting: '正在连接',
       connected: '连接成功',
       connectionClosedRetryEnter: '连接已关闭。按 Enter 可尝试重连。',
@@ -2414,6 +2554,7 @@ function t(language: Language, key: string, arg?: string): string {
       deleteServerConfirm: `Delete server "${arg ?? ''}"?`,
       defaultGroup: 'Default Group',
       passwordRequired: 'Enter login password',
+      privateKeyRequired: 'Enter private key path',
       connecting: 'Connecting',
       connected: 'Connected',
       connectionClosedRetryEnter: 'Connection closed. Press Enter to retry.',

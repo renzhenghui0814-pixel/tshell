@@ -2,7 +2,7 @@
   "name": "tshell",
   "displayName": "tshell",
   "description": "SSH/SFTP client for running Linux commands and transferring files without server-side setup.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "tora-zhren",
   "license": "MIT",
   "icon": "media/tshell.png",

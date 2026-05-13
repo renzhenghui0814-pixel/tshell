@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Support private key SSH login, including optional encrypted private key passphrases.
+- Clarify server action tooltips as "Edit Server" and "Delete Server".
+- Reset file previews to the top every time a file is opened.
+
 ## 0.1.3
 
 - Add DBF file preview with progressive table loading.
