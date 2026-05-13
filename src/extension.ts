@@ -7,6 +7,7 @@ import { Client, ClientChannel, ConnectConfig, SFTPWrapper } from 'ssh2';
 import * as iconv from 'iconv-lite';
 
 type TerminalEncoding = 'utf-8' | 'gb18030';
+type PreviewEncoding = 'utf8' | 'gb2312';
 type RemoteEntryType = 'file' | 'directory' | 'symlink' | 'other';
 type Language = 'zh-CN' | 'en-US';
 
@@ -47,6 +48,14 @@ interface LocalEntry {
   modifiedAt: number;
 }
 
+interface TextPreviewResult {
+  content: string;
+  binary: boolean;
+  done: boolean;
+  nextOffset: number;
+  size: number;
+}
+
 interface AppSettings {
   language: Language;
   showHiddenFiles: boolean;
@@ -79,6 +88,12 @@ export function activate(context: vscode.ExtensionContext) {
       const store = new ConfigStore(context);
       await store.load();
       await vscode.window.showTextDocument(vscode.Uri.file(store.configPath));
+    }),
+    vscode.commands.registerCommand('tshell.copySession', () => {
+      TerminalPage.copyActiveSession();
+    }),
+    vscode.commands.registerCommand('tshell.renameSession', () => {
+      void TerminalPage.renameActiveSession();
     })
   );
 }
@@ -434,11 +449,17 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     details[open] .chevron { transform: rotate(90deg); }
     .group-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .children { margin-left: 18px; padding-top: 4px; }
-    .server { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 4px; align-items: center; margin-top: 4px; padding: 6px; border-radius: 6px; background: var(--vscode-list-hoverBackground); }
+    .server { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 4px; align-items: center; margin-top: 4px; padding: 6px; border-radius: 6px; background: transparent; transition: background .12s ease; }
+    .server:hover { background: var(--vscode-list-hoverBackground); }
+    .server.selected { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
+    .server.selected .server-meta { color: var(--vscode-list-activeSelectionForeground); opacity: .86; }
+    .server:focus-within { background: var(--vscode-list-focusBackground, var(--vscode-list-hoverBackground)); }
     .server-main { min-width: 0; cursor: pointer; }
     .server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .server-meta { color: var(--vscode-descriptionForeground); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .mini { width: auto; padding: 3px 6px; font-size: 12px; }
+    .mini:hover, .mini:focus { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); outline: none; }
+    .mini:active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
     .empty { color: var(--vscode-descriptionForeground); padding: 8px 0; }
     .modal { position: fixed; inset: 0; display: none; place-items: center; background: rgba(0,0,0,.35); padding: 12px; }
     .modal.open { display: grid; }
@@ -487,6 +508,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     const vscode = acquireVsCodeApi();
     const $ = (id) => document.getElementById(id);
     let state = { groups: [], passwords: {}, config: { settings: { language: 'en-US', showHiddenFiles: false } } };
+    let selectedServerId = '';
     const i18n = {
       'zh-CN': {
         title: '远程服务器',
@@ -594,11 +616,17 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
         for (const server of group.servers) {
           const row = document.createElement('div');
           row.className = 'server';
+          row.tabIndex = 0;
+          if (selectedServerId === server.id) row.classList.add('selected');
           const icon = document.createElement('span');
           icon.textContent = '▸';
           const main = document.createElement('div');
           main.className = 'server-main';
           main.title = text('doubleClickConnect');
+          main.onclick = () => {
+            selectedServerId = server.id;
+            render();
+          };
           main.ondblclick = () => post('openTerminal', { groupId: group.id, serverId: server.id });
           const title = document.createElement('div');
           title.className = 'server-name';
@@ -688,6 +716,8 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
 }
 
 class TerminalPage {
+  private static active?: TerminalPage;
+  private static readonly titleCounts = new Map<string, number>();
   private readonly panel: vscode.WebviewPanel;
   private client?: Client;
   private shell?: ClientChannel;
@@ -696,18 +726,22 @@ class TerminalPage {
   private connecting = false;
   private terminalCols = 120;
   private terminalRows = 36;
+  private readonly baseTitle: string;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly server: ServerConfig,
     private readonly password: string,
-    private readonly settings: AppSettings
+    private readonly settings: AppSettings,
+    viewColumn: vscode.ViewColumn = vscode.ViewColumn.One,
+    title?: string
   ) {
+    this.baseTitle = server.name || server.host;
     this.decoder = iconv.decodeStream(server.encoding);
     this.panel = vscode.window.createWebviewPanel(
       'tshell.terminal',
-      `${server.name || server.host}`,
-      vscode.ViewColumn.One,
+      title ?? this.baseTitle,
+      viewColumn,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -718,8 +752,51 @@ class TerminalPage {
       }
     );
     this.panel.webview.html = this.renderHtml();
+    TerminalPage.active = this;
     this.panel.webview.onDidReceiveMessage((message: WebviewMessage) => this.handleMessage(message));
+    this.panel.onDidChangeViewState((event) => {
+      if (event.webviewPanel.active) {
+        TerminalPage.active = this;
+      }
+    });
     this.panel.onDidDispose(() => this.dispose());
+  }
+
+  static copyActiveSession(): void {
+    if (!TerminalPage.active) {
+      void vscode.window.showInformationMessage(t(vsCodeLanguage(), 'noActiveSession'));
+      return;
+    }
+    TerminalPage.active.copySession();
+  }
+
+  static async renameActiveSession(): Promise<void> {
+    if (!TerminalPage.active) {
+      void vscode.window.showInformationMessage(t(vsCodeLanguage(), 'noActiveSession'));
+      return;
+    }
+    await TerminalPage.active.renameSession();
+  }
+
+  private copySession(): void {
+    new TerminalPage(this.context, this.server, this.password, this.settings, vscode.ViewColumn.Beside, TerminalPage.nextTitle(this.baseTitle));
+  }
+
+  private static nextTitle(baseTitle: string): string {
+    const next = (TerminalPage.titleCounts.get(baseTitle) ?? 0) + 1;
+    TerminalPage.titleCounts.set(baseTitle, next);
+    return `${baseTitle}(${next})`;
+  }
+
+  private async renameSession(): Promise<void> {
+    const next = await vscode.window.showInputBox({
+      title: t(this.settings.language, 'renameSession'),
+      value: this.panel.title,
+      prompt: t(this.settings.language, 'sessionNamePrompt')
+    });
+    if (next?.trim()) {
+      this.panel.title = next.trim();
+    }
   }
 
   private async handleMessage(message: WebviewMessage): Promise<void> {
@@ -738,6 +815,12 @@ class TerminalPage {
           break;
         case 'openTransfer':
           new TransferPage(this.context, this.server, this.password, this.settings);
+          break;
+        case 'copySession':
+          this.copySession();
+          break;
+        case 'renameSession':
+          await this.renameSession();
           break;
       }
     } catch (error) {
@@ -817,6 +900,9 @@ class TerminalPage {
   }
 
   private dispose(): void {
+    if (TerminalPage.active === this) {
+      TerminalPage.active = undefined;
+    }
     this.disposeConnection();
   }
 
@@ -844,6 +930,8 @@ class TerminalPage {
     const xtermCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
     const fitJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'addon-fit', 'lib', 'addon-fit.js'));
     const fileTransferText = t(this.settings.language, 'fileTransfer');
+    const copySessionText = t(this.settings.language, 'copySession');
+    const renameSessionText = t(this.settings.language, 'renameSession');
     const readyText = t(this.settings.language, 'readyConnect');
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -863,6 +951,10 @@ class TerminalPage {
     #terminal { width: 100%; height: 100%; min-height: 0; padding: 8px; background: var(--vscode-editor-background); overflow: hidden; }
     .xterm { height: 100%; }
     .xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
+    .context-menu { position: fixed; display: none; min-width: 150px; z-index: 20; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+    .context-menu.open { display: block; }
+    .context-item { padding: 6px 10px; border-radius: 3px; cursor: pointer; user-select: none; }
+    .context-item:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
   </style>
 </head>
 <body>
@@ -871,20 +963,48 @@ class TerminalPage {
     <button id="transfer">${fileTransferText}</button>
   </div>
   <div id="terminal"></div>
+  <div id="contextMenu" class="context-menu" data-vscode-context='{"webviewSection":"terminal"}'>
+    <div id="copySession" class="context-item">${copySessionText}</div>
+    <div id="renameSession" class="context-item">${renameSessionText}</div>
+  </div>
   <script nonce="${nonce}" src="${xtermJs}"></script>
   <script nonce="${nonce}" src="${fitJs}"></script>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const terminalElement = document.getElementById('terminal');
+    const menu = document.getElementById('contextMenu');
+    function terminalTheme() {
+      const styles = getComputedStyle(document.body);
+      const light = document.body.classList.contains('vscode-light');
+      return {
+        background: styles.backgroundColor,
+        foreground: styles.color,
+        cursor: styles.color,
+        selectionBackground: light ? '#add6ff' : '#264f78',
+        black: light ? '#000000' : '#000000',
+        red: light ? '#a31515' : '#cd3131',
+        green: light ? '#008000' : '#0dbc79',
+        yellow: light ? '#795e26' : '#e5e510',
+        blue: light ? '#0451a5' : '#2472c8',
+        magenta: light ? '#af00db' : '#bc3fbc',
+        cyan: light ? '#008080' : '#11a8cd',
+        white: light ? '#555555' : '#e5e5e5',
+        brightBlack: light ? '#666666' : '#666666',
+        brightRed: light ? '#cd3131' : '#f14c4c',
+        brightGreen: light ? '#14ce14' : '#23d18b',
+        brightYellow: light ? '#b5a642' : '#f5f543',
+        brightBlue: light ? '#0000ff' : '#3b8eea',
+        brightMagenta: light ? '#af00db' : '#d670d6',
+        brightCyan: light ? '#008080' : '#29b8db',
+        brightWhite: light ? '#000000' : '#ffffff'
+      };
+    }
     const term = new Terminal({
       cursorBlink: true,
       convertEol: true,
       fontFamily: 'Consolas, "Courier New", monospace',
       fontSize: 13,
-      theme: {
-        background: getComputedStyle(document.body).backgroundColor,
-        foreground: getComputedStyle(document.body).color
-      }
+      theme: terminalTheme()
     });
     const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
@@ -896,6 +1016,23 @@ class TerminalPage {
     });
     term.onData((data) => vscode.postMessage({ type: 'input', data }));
     document.getElementById('transfer').onclick = () => vscode.postMessage({ type: 'openTransfer' });
+    document.getElementById('copySession').onclick = () => {
+      menu.classList.remove('open');
+      vscode.postMessage({ type: 'copySession' });
+    };
+    document.getElementById('renameSession').onclick = () => {
+      menu.classList.remove('open');
+      vscode.postMessage({ type: 'renameSession' });
+    };
+    function hideMenu() { menu.classList.remove('open'); }
+    document.body.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      menu.style.left = Math.min(event.clientX, window.innerWidth - 170) + 'px';
+      menu.style.top = Math.min(event.clientY, window.innerHeight - 42) + 'px';
+      menu.classList.add('open');
+    });
+    document.body.addEventListener('click', hideMenu);
+    window.addEventListener('blur', hideMenu);
     function resize() {
       fitAddon.fit();
       vscode.postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
@@ -908,6 +1045,7 @@ class TerminalPage {
     }
     window.addEventListener('resize', resize);
     new ResizeObserver(scheduleResize).observe(terminalElement);
+    new MutationObserver(() => term.options.theme = terminalTheme()).observe(document.body, { attributes: true, attributeFilter: ['class'] });
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'output') term.write(message.data || '');
@@ -977,6 +1115,12 @@ class TransferPage {
         case 'downloadMany':
           await this.download(toDownloadItems(message.items));
           break;
+        case 'openTextFile':
+          await this.openTextFile(String(message.path ?? ''), normalizePreviewEncoding(String(message.encoding ?? ''), this.server.encoding));
+          break;
+        case 'loadTextChunk':
+          await this.loadTextChunk(String(message.path ?? ''), normalizePreviewEncoding(String(message.encoding ?? ''), this.server.encoding), Number(message.offset) || 0);
+          break;
       }
     } catch (error) {
       this.report(error);
@@ -988,7 +1132,7 @@ class TransferPage {
     if (this.connected && this.sftp) return;
     this.connecting = true;
     this.disposeConnection();
-    this.post({ type: 'status', text: t(this.settings.language, 'connectingTransfer') });
+    this.log(t(this.settings.language, 'connectingTransfer'));
     try {
       this.client = new Client();
       await new Promise<void>((resolve, reject) => {
@@ -1007,7 +1151,6 @@ class TransferPage {
       this.client.once('close', () => this.markClosed(t(this.settings.language, 'transferClosedRetry')));
       this.sftp.once('close', () => this.markClosed(t(this.settings.language, 'transferClosedRetry')));
       this.connected = true;
-      this.post({ type: 'status', text: t(this.settings.language, 'transferConnected') });
       this.log(t(this.settings.language, 'transferConnected'));
     } finally {
       this.connecting = false;
@@ -1068,7 +1211,7 @@ class TransferPage {
 
   private async uploadLocal(localPaths: string[]): Promise<void> {
     if (!localPaths.length) {
-      this.post({ type: 'status', text: t(this.settings.language, 'selectUploadItems') });
+      this.log(t(this.settings.language, 'selectUploadItems'));
       return;
     }
     if (!this.sftp || !this.connected) {
@@ -1089,7 +1232,7 @@ class TransferPage {
       this.log(`${t(this.settings.language, 'uploadDone')}: ${remotePath}`);
     }
     await this.list(this.currentPath);
-    this.post({ type: 'status', text: t(this.settings.language, 'uploadDone') });
+    this.log(t(this.settings.language, 'uploadDone'));
   }
 
   private async readdirLocal(localPath: string): Promise<LocalEntry[]> {
@@ -1122,7 +1265,7 @@ class TransferPage {
 
   private async download(items: DownloadRequestItem[]): Promise<void> {
     if (!items.length) {
-      this.post({ type: 'status', text: t(this.settings.language, 'selectDownloadItems') });
+      this.log(t(this.settings.language, 'selectDownloadItems'));
       return;
     }
     if (!this.sftp || !this.connected) {
@@ -1142,7 +1285,7 @@ class TransferPage {
       }
       this.log(`${t(this.settings.language, 'downloadDone')}: ${localTarget}`);
     }
-    this.post({ type: 'status', text: `${t(this.settings.language, 'downloadDone')}: ${items.length}` });
+    this.log(`${t(this.settings.language, 'downloadDone')}: ${items.length}`);
   }
 
   private async uploadDirectory(localDirectory: string, remoteDirectory: string): Promise<void> {
@@ -1197,13 +1340,95 @@ class TransferPage {
     return new Promise((resolve, reject) => this.sftp!.fastGet(remotePath, localPath, (error) => error ? reject(error) : resolve()));
   }
 
+  private async openTextFile(remotePath: string, encoding: PreviewEncoding): Promise<void> {
+    if (!remotePath) {
+      return;
+    }
+    if (!this.sftp || !this.connected) {
+      await this.connect();
+    }
+    this.ensureSftp();
+    const preview = await this.readRemoteTextChunk(remotePath, encoding, 0);
+    this.post({
+      type: 'textPreview',
+      path: remotePath,
+      name: basenameRemote(remotePath),
+      language: previewLanguage(remotePath),
+      encoding,
+      content: preview.content,
+      unsupported: preview.binary,
+      message: preview.binary ? t(this.settings.language, 'unsupportedBinaryPreview') : '',
+      done: preview.done,
+      nextOffset: preview.nextOffset,
+      totalSize: preview.size
+    });
+    if (preview.binary) {
+      this.log(`${t(this.settings.language, 'unsupportedBinaryPreview')}: ${remotePath}`);
+    } else {
+      this.log(`${t(this.settings.language, 'previewing')}: ${remotePath}`);
+    }
+  }
+
+  private async loadTextChunk(remotePath: string, encoding: PreviewEncoding, offset: number): Promise<void> {
+    if (!remotePath) return;
+    if (!this.sftp || !this.connected) {
+      await this.connect();
+    }
+    this.ensureSftp();
+    const preview = await this.readRemoteTextChunk(remotePath, encoding, offset);
+    this.post({
+      type: 'textChunk',
+      path: remotePath,
+      encoding,
+      content: preview.content,
+      done: preview.done,
+      nextOffset: preview.nextOffset,
+      totalSize: preview.size
+    });
+  }
+
+  private async readRemoteTextChunk(remotePath: string, encoding: PreviewEncoding, offset: number): Promise<TextPreviewResult> {
+    const chunkBytes = 512 * 1024;
+    const attrs = await this.stat(remotePath);
+    const size = attrs.size || 0;
+    if (offset >= size && size > 0) {
+      return { content: '', binary: false, done: true, nextOffset: size, size };
+    }
+    const bytesToRead = Math.min(chunkBytes, Math.max(0, size - offset || chunkBytes));
+    const buffer = await this.readRemoteBytes(remotePath, offset, bytesToRead);
+    if (offset === 0 && isLikelyBinary(buffer)) {
+      return { content: '', binary: true, done: true, nextOffset: buffer.length, size };
+    }
+    const text = encoding === 'gb2312' ? iconv.decode(buffer, 'gb18030') : buffer.toString('utf8');
+    const nextOffset = offset + buffer.length;
+    return { content: text, binary: false, done: nextOffset >= size, nextOffset, size };
+  }
+
+  private stat(remotePath: string): Promise<{ size: number; mtime: number }> {
+    return new Promise((resolve, reject) => {
+      this.sftp!.stat(remotePath, (error, attrs) => {
+        if (error) reject(error);
+        else resolve({ size: attrs.size, mtime: attrs.mtime });
+      });
+    });
+  }
+
+  private readRemoteBytes(remotePath: string, offset: number, maxBytes: number): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const stream = this.sftp!.createReadStream(remotePath, { start: offset, end: Math.max(offset, offset + maxBytes - 1) });
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('error', reject);
+      stream.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+  }
+
   private ensureSftp(): void {
     if (!this.sftp) throw new Error(t(this.settings.language, 'transferNotConnected'));
   }
 
   private report(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    this.post({ type: 'status', text: `${t(this.settings.language, 'error')}: ${message}` });
     this.log(`${t(this.settings.language, 'error')}: ${message}`);
   }
 
@@ -1232,7 +1457,6 @@ class TransferPage {
     this.connected = false;
     this.sftp = undefined;
     this.client = undefined;
-    this.post({ type: 'status', text });
     this.log(text);
   }
 
@@ -1240,6 +1464,7 @@ class TransferPage {
     const nonce = getNonce();
     const webview = this.panel.webview;
     const lang = this.settings.language;
+    const defaultPreviewEncoding = this.server.encoding === 'gb18030' ? 'gb2312' : 'utf8';
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1248,13 +1473,13 @@ class TransferPage {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     * { box-sizing: border-box; }
-    body { --log-height: 150px; margin: 0; height: 100vh; display: grid; grid-template-rows: auto minmax(160px, 1fr) 6px var(--log-height) auto; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+    body { --log-height: 150px; margin: 0; height: 100vh; display: grid; grid-template-rows: auto minmax(120px, 1fr) 6px var(--log-height); color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); overflow: hidden; }
     .toolbar { display: grid; grid-template-columns: minmax(160px, 1fr) auto auto auto; gap: 8px; padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
-    input { min-width: 0; padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; font: inherit; }
+    input, select { min-width: 0; padding: 6px 8px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border, transparent); border-radius: 5px; font: inherit; }
     button { cursor: pointer; padding: 6px 9px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); border: 1px solid var(--vscode-button-border, transparent); border-radius: 5px; font: inherit; }
     button:hover { background: var(--vscode-button-hoverBackground); }
     button:disabled { opacity: .45; cursor: default; }
-    .list { overflow: auto; }
+    .list { min-height: 0; overflow: auto; }
     .row { display: grid; grid-template-columns: 28px minmax(180px, 1fr) 110px 165px; gap: 8px; align-items: center; padding: 7px 8px; border-bottom: 1px solid var(--vscode-panel-border); }
     .row:not(.header) { cursor: default; }
     .row:not(.header):hover { background: rgba(75, 156, 255, .18); }
@@ -1266,8 +1491,36 @@ class TransferPage {
     .folder .name { font-weight: 650; }
     .log-resizer { cursor: row-resize; background: var(--vscode-panel-border); }
     .log-resizer:hover { background: var(--vscode-focusBorder); }
-    .log { overflow: auto; padding: 8px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-terminal-background, var(--vscode-editor-background)); color: var(--vscode-terminal-foreground, var(--vscode-foreground)); font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre-wrap; }
+    .log { min-height: 0; overflow: auto; padding: 8px; border-top: 1px solid var(--vscode-panel-border); background: var(--vscode-terminal-background, var(--vscode-editor-background)); color: var(--vscode-terminal-foreground, var(--vscode-foreground)); font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre-wrap; outline: none; }
     .status { padding: 7px 8px; color: var(--vscode-descriptionForeground); border-top: 1px solid var(--vscode-panel-border); }
+    .preview { position: fixed; inset: 28px; display: none; min-height: 0; grid-template-rows: auto minmax(0, 1fr); z-index: 8; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-editor-background); box-shadow: 0 12px 40px rgba(0,0,0,.45); overflow: hidden; }
+    .preview.open { display: grid; }
+    .preview-bar { display: grid; grid-template-columns: minmax(120px, 1fr) auto auto auto auto; gap: 8px; align-items: center; padding: 7px 8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
+    .preview-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
+    .font-control { display: inline-grid; grid-template-columns: auto 42px auto; gap: 4px; align-items: center; }
+    .font-control button { min-width: 26px; padding: 4px 7px; }
+    .font-size { color: var(--vscode-descriptionForeground); text-align: center; font-size: 12px; }
+    .code { overflow: auto; font-family: var(--vscode-editor-font-family, Consolas, monospace); font-size: var(--preview-font-size, 12px); line-height: 1.35; }
+    .code-line { display: grid; grid-template-columns: 54px minmax(0, 1fr); min-height: 18px; }
+    .line-number { padding: 0 10px 0 6px; text-align: right; user-select: none; color: var(--vscode-editorLineNumber-foreground); background: var(--vscode-editorGutter-background, var(--vscode-editor-background)); border-right: 1px solid var(--vscode-panel-border); }
+    .line-code { padding: 0 10px; white-space: pre; }
+    .tok-comment { color: var(--vscode-editorCodeLens-foreground); }
+    .tok-string { color: var(--vscode-debugTokenExpression-string); }
+    .tok-keyword { color: var(--vscode-symbolIcon-keywordForeground, #569cd6); font-weight: 600; }
+    .tok-type { color: var(--vscode-symbolIcon-structForeground, #4ec9b0); }
+    .tok-number { color: var(--vscode-symbolIcon-numberForeground, #b5cea8); }
+    .tok-function { color: var(--vscode-symbolIcon-functionForeground, #dcdcaa); }
+    .tok-preprocessor { color: var(--vscode-symbolIcon-operatorForeground, #c586c0); font-weight: 600; }
+    .tok-tag { color: var(--vscode-symbolIcon-classForeground, #4ec9b0); }
+    .tok-attr { color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); }
+    .tok-section { color: var(--vscode-symbolIcon-classForeground, #267f99); font-weight: 700; }
+    .tok-key { color: var(--vscode-symbolIcon-propertyForeground, #0451a5); font-weight: 600; }
+    .tok-operator { color: var(--vscode-symbolIcon-operatorForeground, #000000); }
+    .csv-table { width: max-content; min-width: 100%; border-collapse: collapse; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+    .csv-table th, .csv-table td { max-width: 320px; padding: 5px 8px; border: 1px solid var(--vscode-panel-border); white-space: pre-wrap; vertical-align: top; }
+    .csv-table th { position: sticky; top: 0; z-index: 1; color: var(--vscode-editor-foreground); background: var(--vscode-sideBar-background); font-weight: 700; }
+    .preview-note { padding: 6px 10px; color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); background: var(--vscode-editorWarning-background, var(--vscode-inputValidation-warningBackground, transparent)); border-bottom: 1px solid var(--vscode-panel-border); }
+    .unsupported-preview { display: grid; place-items: center; min-height: 220px; padding: 24px; color: var(--vscode-descriptionForeground); font-size: 14px; text-align: center; }
     .modal { position: fixed; inset: 0; display: none; grid-template-rows: minmax(0, 1fr); padding: 18px; background: rgba(0,0,0,.42); z-index: 10; }
     .modal.open { display: grid; }
     .picker { display: grid; grid-template-rows: auto minmax(180px, 1fr) auto; min-height: 0; border: 1px solid var(--vscode-panel-border); border-radius: 8px; background: var(--vscode-editor-background); overflow: hidden; }
@@ -1284,9 +1537,25 @@ class TransferPage {
     <button id="downloadSelected">${t(lang, 'downloadSelected')}</button>
   </div>
   <div class="list" id="list"></div>
+  <div id="preview" class="preview">
+    <div class="preview-bar">
+      <div id="previewTitle" class="preview-title"></div>
+      <button id="toggleCsvView" style="display:none">${t(lang, 'tablePreview')}</button>
+      <select id="previewEncoding" title="${t(lang, 'previewEncoding')}">
+        <option value="utf8">UTF-8</option>
+        <option value="gb2312">GB2312</option>
+      </select>
+      <div class="font-control" title="${t(lang, 'previewFontSize')}">
+        <button id="previewFontDown">-</button>
+        <span id="previewFontSize" class="font-size">12px</span>
+        <button id="previewFontUp">+</button>
+      </div>
+      <button id="closePreview">${t(lang, 'close')}</button>
+    </div>
+    <div id="code" class="code"></div>
+  </div>
   <div id="logResizer" class="log-resizer" title="${t(lang, 'resizeLog')}"></div>
   <div class="log" id="log"></div>
-  <div class="status" id="status">${t(lang, 'readyConnect')}</div>
   <div id="uploadModal" class="modal">
     <div class="picker">
       <div class="pickerbar">
@@ -1310,7 +1579,23 @@ class TransferPage {
     let localEntries = [];
     let selectedLocalPaths = new Set();
     let currentLocalPath = '';
+    let currentPreviewPath = '';
+    let currentPreviewEncoding = '${defaultPreviewEncoding}';
+    let currentPreviewContent = '';
+    let currentPreviewLanguage = 'text';
+    let currentPreviewDone = true;
+    let currentPreviewNextOffset = 0;
+    let currentPreviewLoading = false;
+    let previewFontSize = 12;
+    let pendingPreviewLine = '';
+    let renderedPreviewLines = 0;
+    let previewHighlightState = { blockComment: false };
+    let csvTableMode = false;
     function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
+    function applyPreviewFontSize() {
+      $('code').style.setProperty('--preview-font-size', previewFontSize + 'px');
+      $('previewFontSize').textContent = previewFontSize + 'px';
+    }
     function parentPath(value) {
       const clean = value.replace(/\\/+$/, '');
       if (!clean || clean === '.' || clean === '/') return '.';
@@ -1323,6 +1608,251 @@ class TransferPage {
       if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB';
       if (size < 1024 * 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + ' MB';
       return (size / 1024 / 1024 / 1024).toFixed(1) + ' GB';
+    }
+    function extensionOf(name) {
+      const clean = String(name || '').toLowerCase();
+      const index = clean.lastIndexOf('.');
+      return index >= 0 ? clean.slice(index) : '';
+    }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
+    }
+    function span(className, value) {
+      return '<span class="' + className + '">' + escapeHtml(value) + '</span>';
+    }
+    function classifyWord(word, language, nextChar) {
+      const keywordSet = new Set('alignas alignof and asm auto break case catch class concept constexpr consteval constinit continue co_await co_return co_yield decltype default delete do dynamic_cast else enum explicit export extern false for friend goto if import inline module mutable namespace new noexcept not nullptr operator private protected public register reinterpret_cast requires return sizeof static static_assert static_cast struct switch template this thread_local throw true try typedef typeid typename union using virtual volatile while abstract assert boolean byte char const double extends final finally float implements import instanceof int interface long native new package private protected public return short static strictfp super synchronized throws transient var void yield let const function async await from in of'.split(' '));
+      const typeSet = new Set('bool boolean byte char char8_t char16_t char32_t double float int int8_t int16_t int32_t int64_t long short signed size_t ssize_t string String std uint8_t uint16_t uint32_t uint64_t unsigned void wchar_t FILE auto'.split(' '));
+      if (/^(0x[\\da-fA-F]+|0b[01]+|\\d+(\\.\\d+)?([eE][+-]?\\d+)?[uUlLfF]*)$/.test(word)) return span('tok-number', word);
+      if (typeSet.has(word)) return span('tok-type', word);
+      if (keywordSet.has(word)) return span('tok-keyword', word);
+      if (nextChar === '(' && /^[A-Za-z_$][\\w$]*$/.test(word)) return span('tok-function', word);
+      return escapeHtml(word);
+    }
+    function highlightPlain(value, language) {
+      let result = '';
+      const tokenRegex = /(0x[\\da-fA-F]+|0b[01]+|\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?[uUlLfF]*|[A-Za-z_$][\\w$]*)/g;
+      let last = 0;
+      for (const match of value.matchAll(tokenRegex)) {
+        const index = match.index || 0;
+        result += escapeHtml(value.slice(last, index));
+        const after = value.slice(index + match[0].length).match(/^\\s*(.)/);
+        result += classifyWord(match[0], language, after ? after[1] : '');
+        last = index + match[0].length;
+      }
+      result += escapeHtml(value.slice(last));
+      return result;
+    }
+    function highlightCodePart(value, language) {
+      const strings = /("(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*')/g;
+      let result = '';
+      let last = 0;
+      for (const match of value.matchAll(strings)) {
+        result += highlightPlain(value.slice(last, match.index), language);
+        result += span('tok-string', match[0]);
+        last = (match.index || 0) + match[0].length;
+      }
+      result += highlightPlain(value.slice(last), language);
+      return result;
+    }
+    function splitLineComment(line, language) {
+      if (language === 'python' || language === 'shell') {
+        const hash = line.indexOf('#');
+        return hash >= 0 ? [line.slice(0, hash), line.slice(hash)] : [line, ''];
+      }
+      const slash = line.indexOf('//');
+      return slash >= 0 ? [line.slice(0, slash), line.slice(slash)] : [line, ''];
+    }
+    function highlightCStyleLine(line, language, state) {
+      if (state.blockComment) {
+        const end = line.indexOf('*/');
+        if (end < 0) return span('tok-comment', line);
+        state.blockComment = false;
+        return span('tok-comment', line.slice(0, end + 2)) + highlightCStyleLine(line.slice(end + 2), language, state);
+      }
+      const blockStart = line.indexOf('/*');
+      const lineComment = line.indexOf('//');
+      const commentStart = blockStart >= 0 && (lineComment < 0 || blockStart < lineComment) ? blockStart : lineComment;
+      if (commentStart >= 0) {
+        const before = line.slice(0, commentStart);
+        const comment = line.slice(commentStart);
+        if (comment.startsWith('/*')) {
+          const end = comment.indexOf('*/', 2);
+          if (end < 0) {
+            state.blockComment = true;
+            return highlightCodePart(before, language) + span('tok-comment', comment);
+          }
+          return highlightCodePart(before, language) + span('tok-comment', comment.slice(0, end + 2)) + highlightCStyleLine(comment.slice(end + 2), language, state);
+        }
+        return highlightCodePart(before, language) + span('tok-comment', comment);
+      }
+      if (/^\\s*#\\s*\\w+/.test(line)) {
+        const match = line.match(/^(\\s*#\\s*\\w+)(.*)$/);
+        return match ? span('tok-preprocessor', match[1]) + highlightCodePart(match[2], language) : highlightCodePart(line, language);
+      }
+      return highlightCodePart(line, language);
+    }
+    function highlightLine(line, language, state) {
+      if (language === 'ini') {
+        if (/^\\s*[;#]/.test(line)) return span('tok-comment', line);
+        const section = line.match(/^(\\s*)\\[([^\\]]+)\\](.*)$/);
+        if (section) return escapeHtml(section[1]) + span('tok-section', '[' + section[2] + ']') + escapeHtml(section[3]);
+        const pair = line.match(/^(\\s*)([^=:#\\s][^=:#]*?)(\\s*[=:])(.*)$/);
+        if (pair) return escapeHtml(pair[1]) + span('tok-key', pair[2].trimEnd()) + escapeHtml(pair[2].slice(pair[2].trimEnd().length)) + span('tok-operator', pair[3]) + highlightCodePart(pair[4], 'text');
+        return escapeHtml(line);
+      }
+      if (language === 'xml' || language === 'html') {
+        const html = escapeHtml(line).replace(/([\\w:-]+)=(&quot;.*?&quot;|&#39;.*?&#39;)/g, '<span class="tok-attr">$1</span>=$2');
+        return html.replace(/(&lt;\\/?[\\w:-]+)/g, '<span class="tok-tag">$1</span>');
+      }
+      if (['c','cpp','java','javascript','typescript','css'].includes(language)) {
+        return highlightCStyleLine(line, language, state);
+      }
+      const parts = splitLineComment(line, language);
+      return highlightCodePart(parts[0], language) + (parts[1] ? span('tok-comment', parts[1]) : '');
+    }
+    function parseCsv(content) {
+      const rows = [];
+      let row = [];
+      let cell = '';
+      let quoted = false;
+      for (let index = 0; index < content.length; index += 1) {
+        const char = content[index];
+        if (quoted) {
+          if (char === '"' && content[index + 1] === '"') {
+            cell += '"';
+            index += 1;
+          } else if (char === '"') {
+            quoted = false;
+          } else {
+            cell += char;
+          }
+        } else if (char === '"') {
+          quoted = true;
+        } else if (char === ',') {
+          row.push(cell);
+          cell = '';
+        } else if (char === '\\n') {
+          row.push(cell);
+          rows.push(row);
+          row = [];
+          cell = '';
+        } else if (char !== '\\r') {
+          cell += char;
+        }
+      }
+      row.push(cell);
+      if (row.length > 1 || row[0]) rows.push(row);
+      return rows;
+    }
+    function renderCsvTable(content) {
+      const rows = parseCsv(content);
+      if (!rows.length) return '<div class="unsupported-preview"></div>';
+      const head = rows[0];
+      let html = '<table class="csv-table"><thead><tr>';
+      for (const cell of head) html += '<th>' + escapeHtml(cell) + '</th>';
+      html += '</tr></thead><tbody>';
+      for (const row of rows.slice(1)) {
+        html += '<tr>';
+        for (let index = 0; index < Math.max(row.length, head.length); index += 1) html += '<td>' + escapeHtml(row[index] || '') + '</td>';
+        html += '</tr>';
+      }
+      return html + '</tbody></table>';
+    }
+    function resetTextPreview() {
+      $('code').innerHTML = '';
+      pendingPreviewLine = '';
+      renderedPreviewLines = 0;
+      previewHighlightState = { blockComment: false };
+    }
+    function appendRenderedLines(lines, language) {
+      const code = $('code');
+      const fragment = document.createDocumentFragment();
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = document.createElement('div');
+        line.className = 'code-line';
+        const number = document.createElement('div');
+        number.className = 'line-number';
+        number.textContent = String(++renderedPreviewLines);
+        const contentElement = document.createElement('div');
+        contentElement.className = 'line-code';
+        contentElement.innerHTML = highlightLine(lines[index], language || 'text', previewHighlightState) || ' ';
+        line.append(number, contentElement);
+        fragment.append(line);
+      }
+      code.append(fragment);
+    }
+    function appendTextPreviewChunk(content, language, done) {
+      const normalized = String(content || '').replace(/\\r\\n/g, '\\n').replace(/\\r/g, '\\n');
+      const merged = pendingPreviewLine + normalized;
+      const lines = merged.split('\\n');
+      if (!done) {
+        pendingPreviewLine = lines.pop() || '';
+      } else {
+        pendingPreviewLine = '';
+      }
+      if (!done && normalized.endsWith('\\n') && lines[lines.length - 1] === '') lines.pop();
+      appendRenderedLines(lines, language);
+    }
+    function renderTextPreview(content, language, done = true) {
+      resetTextPreview();
+      appendTextPreviewChunk(content, language, done);
+    }
+    function addPreviewNote(text) {
+      if (!text) return;
+      const note = document.createElement('div');
+      note.className = 'preview-note';
+      note.textContent = text;
+      $('code').prepend(note);
+    }
+    function renderPreview(message) {
+      const code = $('code');
+      if (message.unsupported) {
+        code.innerHTML = '<div class="unsupported-preview">' + escapeHtml(message.message || '${t(lang, 'unsupportedBinaryPreview')}') + '</div>';
+        $('previewTitle').textContent = message.path || message.name || '';
+      currentPreviewPath = message.path || '';
+      currentPreviewEncoding = message.encoding || currentPreviewEncoding;
+      currentPreviewContent = '';
+      currentPreviewLanguage = message.language || 'text';
+      currentPreviewDone = true;
+      currentPreviewNextOffset = 0;
+      currentPreviewLoading = false;
+      csvTableMode = false;
+        $('toggleCsvView').style.display = 'none';
+        $('previewEncoding').value = currentPreviewEncoding;
+        $('preview').classList.add('open');
+        return;
+      }
+      $('previewTitle').textContent = message.path || message.name || '';
+      currentPreviewPath = message.path || '';
+      currentPreviewEncoding = message.encoding || currentPreviewEncoding;
+      currentPreviewContent = String(message.content || '');
+      currentPreviewLanguage = message.language || 'text';
+      currentPreviewDone = Boolean(message.done);
+      currentPreviewNextOffset = Number(message.nextOffset) || 0;
+      currentPreviewLoading = false;
+      csvTableMode = false;
+      $('toggleCsvView').style.display = currentPreviewLanguage === 'csv' ? '' : 'none';
+      $('toggleCsvView').textContent = '${t(lang, 'tablePreview')}';
+      $('previewEncoding').value = currentPreviewEncoding;
+      renderTextPreview(currentPreviewContent, currentPreviewLanguage, currentPreviewDone);
+      $('preview').classList.add('open');
+    }
+    function appendPreviewChunk(message) {
+      if (message.path !== currentPreviewPath || message.encoding !== currentPreviewEncoding) return;
+      currentPreviewLoading = false;
+      currentPreviewDone = Boolean(message.done);
+      currentPreviewNextOffset = Number(message.nextOffset) || currentPreviewNextOffset;
+      currentPreviewContent += String(message.content || '');
+      if (csvTableMode) $('code').innerHTML = renderCsvTable(currentPreviewContent);
+      else appendTextPreviewChunk(message.content || '', currentPreviewLanguage, currentPreviewDone);
+    }
+    function loadMorePreviewIfNeeded() {
+      const code = $('code');
+      if (!currentPreviewPath || currentPreviewDone || currentPreviewLoading) return;
+      if (code.scrollTop + code.clientHeight < code.scrollHeight - 700) return;
+      currentPreviewLoading = true;
+      post('loadTextChunk', { path: currentPreviewPath, encoding: currentPreviewEncoding, offset: currentPreviewNextOffset });
     }
     function localParentPath(value) {
       if (!value) return '';
@@ -1361,7 +1891,11 @@ class TransferPage {
         }
         render();
       };
-      if (entry.type === 'directory') div.ondblclick = () => post('list', { path: entry.path });
+      if (entry.type === 'directory') {
+        div.ondblclick = () => post('list', { path: entry.path });
+      } else if (entry.type === 'file' || entry.type === 'symlink') {
+        div.ondblclick = () => post('openTextFile', { path: entry.path, encoding: currentPreviewEncoding });
+      }
       div.append(icon, name, size, modified);
       return div;
     }
@@ -1418,7 +1952,7 @@ class TransferPage {
         $('path').value = currentPath;
         render();
       }
-      if (message.type === 'status') $('status').textContent = message.text || '';
+      if (message.type === 'status') appendLog(message.text || '');
       if (message.type === 'localList') {
         currentLocalPath = message.path || '';
         localEntries = message.entries || [];
@@ -1427,16 +1961,43 @@ class TransferPage {
         $('uploadModal').classList.add('open');
         renderLocal();
       }
+      if (message.type === 'textPreview') renderPreview(message);
+      if (message.type === 'textChunk') appendPreviewChunk(message);
       if (message.type === 'log') {
-        const log = $('log');
-        const time = new Date().toLocaleTimeString();
-        log.textContent += '[' + time + '] ' + (message.text || '') + '\\n';
-        log.scrollTop = log.scrollHeight;
+        appendLog(message.text || '');
       }
     });
+    function appendLog(text) {
+      const log = $('log');
+      const time = new Date().toLocaleTimeString();
+      log.textContent += '[' + time + '] ' + text + '\\n';
+      log.scrollTop = log.scrollHeight;
+    }
     $('localPath').addEventListener('keydown', (event) => {
       if (event.key === 'Enter') post('listLocal', { path: $('localPath').value });
     });
+    $('previewEncoding').value = currentPreviewEncoding;
+    $('previewEncoding').onchange = () => {
+      currentPreviewEncoding = $('previewEncoding').value;
+      if (currentPreviewPath) post('openTextFile', { path: currentPreviewPath, encoding: currentPreviewEncoding });
+    };
+    $('toggleCsvView').onclick = () => {
+      if (currentPreviewLanguage !== 'csv') return;
+      csvTableMode = !csvTableMode;
+      $('toggleCsvView').textContent = csvTableMode ? '${t(lang, 'textPreview')}' : '${t(lang, 'tablePreview')}';
+      if (csvTableMode) $('code').innerHTML = renderCsvTable(currentPreviewContent);
+      else renderTextPreview(currentPreviewContent, currentPreviewLanguage, currentPreviewDone);
+    };
+    $('previewFontDown').onclick = () => {
+      previewFontSize = Math.max(8, previewFontSize - 1);
+      applyPreviewFontSize();
+    };
+    $('previewFontUp').onclick = () => {
+      previewFontSize = Math.min(24, previewFontSize + 1);
+      applyPreviewFontSize();
+    };
+    $('code').addEventListener('scroll', loadMorePreviewIfNeeded);
+    $('closePreview').onclick = () => $('preview').classList.remove('open');
     $('localUp').onclick = () => post('listLocal', { path: localParentPath(currentLocalPath) });
     $('cancelUpload').onclick = () => $('uploadModal').classList.remove('open');
     $('confirmUpload').onclick = () => {
@@ -1448,9 +2009,13 @@ class TransferPage {
     window.addEventListener('mouseup', () => { resizingLog = false; });
     window.addEventListener('mousemove', (event) => {
       if (!resizingLog) return;
-      const height = Math.max(80, Math.min(window.innerHeight - 180, window.innerHeight - event.clientY - 28));
+      const height = Math.max(90, Math.min(window.innerHeight - 120, window.innerHeight - event.clientY));
       document.body.style.setProperty('--log-height', height + 'px');
     });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') $('preview').classList.remove('open');
+    });
+    applyPreviewFontSize();
     vscode.postMessage({ type: 'ready' });
   </script>
 </body>
@@ -1504,6 +2069,10 @@ function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   };
 }
 
+function vsCodeLanguage(): Language {
+  return vscode.env.language.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
+}
+
 function t(language: Language, key: string, arg?: string): string {
   const table: Record<Language, Record<string, string>> = {
     'zh-CN': {
@@ -1549,6 +2118,21 @@ function t(language: Language, key: string, arg?: string): string {
       downloadingFile: '正在下载文件',
       fileDownloadDone: '文件下载完成',
       transferNotConnected: '文件传输尚未连接。',
+      unsupportedPreview: '不支持预览该文件类型。',
+      unsupportedBinaryPreview: '二进制文件不支持文本预览。',
+      previewing: '正在预览',
+      previewTooLarge: '文件超过 5 MB，已停止预览。',
+      previewTruncated: '文件较大，仅预览前 1 MB 内容。',
+      previewCacheHit: '使用本地缓存',
+      previewEncoding: '预览编码',
+      previewFontSize: '预览字体大小',
+      tablePreview: '表格预览',
+      textPreview: '文本预览',
+      close: '关闭',
+      copySession: '复制会话',
+      renameSession: '修改会话名',
+      sessionNamePrompt: '请输入新的会话标签名',
+      noActiveSession: '当前没有活动的 tshell 会话。',
       error: '错误',
       resizeLog: '拖拽调整日志高度'
     },
@@ -1595,11 +2179,79 @@ function t(language: Language, key: string, arg?: string): string {
       downloadingFile: 'Downloading file',
       fileDownloadDone: 'File download complete',
       transferNotConnected: 'File transfer is not connected.',
+      unsupportedPreview: 'This file type cannot be previewed.',
+      unsupportedBinaryPreview: 'Binary files cannot be previewed as text.',
+      previewing: 'Previewing',
+      previewTooLarge: 'File is larger than 5 MB. Preview stopped.',
+      previewTruncated: 'Large file: showing the first 1 MB only.',
+      previewCacheHit: 'loaded from local cache',
+      previewEncoding: 'Preview encoding',
+      previewFontSize: 'Preview font size',
+      tablePreview: 'Table Preview',
+      textPreview: 'Text Preview',
+      close: 'Close',
+      copySession: 'Copy Session',
+      renameSession: 'Rename Session',
+      sessionNamePrompt: 'Enter a new session tab name',
+      noActiveSession: 'No active tshell session.',
       error: 'Error',
       resizeLog: 'Drag to resize log'
     }
   };
-  return table[language]?.[key] ?? table['zh-CN'][key] ?? key;
+  return table[language]?.[key] ?? table['en-US'][key] ?? table['zh-CN'][key] ?? key;
+}
+
+function isTextPreviewFile(remotePath: string): boolean {
+  const extension = path.posix.extname(remotePath).toLowerCase();
+  return new Set([
+    '.h', '.hpp', '.c', '.cc', '.cpp', '.cxx', '.java', '.txt', '.ini', '.xml',
+    '.json', '.js', '.jsx', '.ts', '.tsx', '.css', '.html', '.htm', '.md', '.py',
+    '.sh', '.yml', '.yaml', '.log', '.conf', '.properties'
+  ]).has(extension);
+}
+
+function previewLanguage(remotePath: string): string {
+  const extension = path.posix.extname(remotePath).toLowerCase();
+  if (['.xml', '.html', '.htm'].includes(extension)) return extension.slice(1);
+  if (['.ini', '.conf', '.cfg', '.properties', '.env'].includes(extension)) return 'ini';
+  if (extension === '.csv') return 'csv';
+  if (['.c', '.h'].includes(extension)) return 'c';
+  if (['.cc', '.cpp', '.cxx', '.hpp'].includes(extension)) return 'cpp';
+  if (['.java'].includes(extension)) return 'java';
+  if (['.ts', '.tsx'].includes(extension)) return 'typescript';
+  if (['.js', '.jsx'].includes(extension)) return 'javascript';
+  if (['.css'].includes(extension)) return 'css';
+  if (['.py'].includes(extension)) return 'python';
+  if (['.sh'].includes(extension)) return 'shell';
+  return 'text';
+}
+
+function isLikelyBinary(buffer: Buffer): boolean {
+  if (!buffer.length) {
+    return false;
+  }
+  const sampleLength = Math.min(buffer.length, 4096);
+  let suspicious = 0;
+  for (let index = 0; index < sampleLength; index += 1) {
+    const value = buffer[index];
+    if (value === 0) {
+      return true;
+    }
+    if (value < 7 || (value > 14 && value < 32)) {
+      suspicious += 1;
+    }
+  }
+  return suspicious / sampleLength > 0.08;
+}
+
+function normalizePreviewEncoding(value: string, fallback: TerminalEncoding): PreviewEncoding {
+  if (value.toLowerCase() === 'gb2312' || value.toLowerCase() === 'gbk' || value.toLowerCase() === 'gb18030') {
+    return 'gb2312';
+  }
+  if (value.toLowerCase() === 'utf8' || value.toLowerCase() === 'utf-8') {
+    return 'utf8';
+  }
+  return fallback === 'gb18030' ? 'gb2312' : 'utf8';
 }
 
 function normalizeEncoding(encoding?: string): TerminalEncoding {
