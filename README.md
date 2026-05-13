@@ -9,6 +9,7 @@ The extension only uses standard SSH and SFTP from the VS Code client side. It d
 - Manage saved Linux servers in groups.
 - Add, edit, delete, and rename server groups.
 - Add, edit, and delete server configs.
+- Use compact icon actions and right-click menus in the server manager. Right-click blank space to add a group, right-click a group to manage groups or add a server, and right-click a server to edit or delete it.
 - Password login only, by design for the current simplified version.
 - Server config includes host, port, user, optional encrypted password, and input/output encoding.
 - Store groups, servers, language, and file-transfer settings in `tshell.config.json`.
@@ -22,6 +23,7 @@ The extension only uses standard SSH and SFTP from the VS Code client side. It d
 - Select multiple remote files/folders and download them in one operation.
 - Download selected remote entries from the toolbar instead of per-row buttons.
 - Preview common remote text files in the file transfer page with line numbers, basic syntax highlighting, and UTF-8/GB2312 preview encoding selection.
+- Preview CSV and DBF files as tables with row numbers. DBF previews load progressively while scrolling.
 - Review upload/download history in the resizable file transfer operation log, including each file inside uploaded or downloaded folders.
 - Retry SSH/SFTP connections from the terminal with Enter or from the file transfer page with Refresh/path Enter after a disconnect.
 - Show remote file size and last modified time.

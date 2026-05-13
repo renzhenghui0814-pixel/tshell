@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3
+
+- Add DBF file preview with progressive table loading.
+- Add row numbers to CSV and DBF table previews.
+- Improve the server manager with compact icon actions and right-click menus for blank areas, groups, and servers.
+- Hide encoding text from server rows to keep the server list cleaner.
+- Fix terminal layout sizing so the last line is not hidden at the bottom of the page.
+
+## 0.1.2
+
+- Add Marketplace icon.
+
 ## 0.1.1
 
 - Manage SSH servers with groups in the tshell activity bar.

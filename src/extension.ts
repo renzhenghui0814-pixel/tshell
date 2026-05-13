@@ -56,6 +56,21 @@ interface TextPreviewResult {
   size: number;
 }
 
+interface DbfField {
+  name: string;
+  type: string;
+  length: number;
+  decimalCount: number;
+}
+
+interface DbfPreviewResult {
+  fields: DbfField[];
+  rows: string[][];
+  recordCount: number;
+  nextRecord: number;
+  done: boolean;
+}
+
 interface AppSettings {
   language: Language;
   showHiddenFiles: boolean;
@@ -432,7 +447,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; padding: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
+    body { margin: 0; min-height: 100vh; padding: 10px; color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
     button, input, select { font: inherit; border-radius: 5px; border: 1px solid var(--vscode-input-border, transparent); }
     button { cursor: pointer; padding: 5px 7px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
     button:hover { background: var(--vscode-button-hoverBackground); }
@@ -443,13 +458,13 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     .title { font-weight: 700; }
     .tree { border-top: 1px solid var(--vscode-panel-border); margin-top: 8px; }
     details.group { border-bottom: 1px solid var(--vscode-panel-border); padding: 6px 0; }
-    summary.group-head { display: grid; grid-template-columns: 18px 1fr auto auto auto; gap: 4px; align-items: center; list-style: none; cursor: pointer; }
+    summary.group-head { display: grid; grid-template-columns: 18px 1fr auto; gap: 4px; align-items: center; list-style: none; cursor: pointer; }
     summary.group-head::-webkit-details-marker { display: none; }
     .chevron { color: var(--vscode-descriptionForeground); text-align: center; transition: transform .12s ease; }
     details[open] .chevron { transform: rotate(90deg); }
     .group-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .children { margin-left: 18px; padding-top: 4px; }
-    .server { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 4px; align-items: center; margin-top: 4px; padding: 6px; border-radius: 6px; background: transparent; transition: background .12s ease; }
+    .server { display: grid; grid-template-columns: 18px 1fr auto; gap: 4px; align-items: center; margin-top: 4px; padding: 6px; border-radius: 6px; background: transparent; transition: background .12s ease; }
     .server:hover { background: var(--vscode-list-hoverBackground); }
     .server.selected { color: var(--vscode-list-activeSelectionForeground); background: var(--vscode-list-activeSelectionBackground); }
     .server.selected .server-meta { color: var(--vscode-list-activeSelectionForeground); opacity: .86; }
@@ -457,7 +472,8 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     .server-main { min-width: 0; cursor: pointer; }
     .server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .server-meta { color: var(--vscode-descriptionForeground); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .mini { width: auto; padding: 3px 6px; font-size: 12px; }
+    .actions-inline { display: inline-flex; gap: 2px; justify-content: flex-end; }
+    .mini { width: 24px; height: 24px; display: inline-grid; place-items: center; padding: 0; font-size: 14px; line-height: 1; }
     .mini:hover, .mini:focus { background: var(--vscode-button-secondaryHoverBackground, var(--vscode-list-hoverBackground)); outline: none; }
     .mini:active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
     .empty { color: var(--vscode-descriptionForeground); padding: 8px 0; }
@@ -467,6 +483,10 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     .dialog-title { font-weight: 700; margin-bottom: 8px; }
     .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
     .status { margin-top: 8px; color: var(--vscode-errorForeground); min-height: 18px; }
+    .context-menu { position: fixed; display: none; z-index: 20; min-width: 160px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+    .context-menu.open { display: block; }
+    .context-item { padding: 6px 10px; border-radius: 3px; cursor: pointer; user-select: none; white-space: nowrap; }
+    .context-item:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
   </style>
 </head>
 <body>
@@ -503,12 +523,14 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       </div>
     </div>
   </div>
+  <div id="contextMenu" class="context-menu"></div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const $ = (id) => document.getElementById(id);
     let state = { groups: [], passwords: {}, config: { settings: { language: 'en-US', showHiddenFiles: false } } };
     let selectedServerId = '';
+    const icons = { addGroup: '+', addServer: '⊕', renameGroup: '✎', deleteGroup: '🗑', edit: '✎', delete: '🗑' };
     const i18n = {
       'zh-CN': {
         title: '远程服务器',
@@ -564,9 +586,31 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     function status(text) { $('status').textContent = text || ''; }
     function lang() { return state.config?.settings?.language || 'en-US'; }
     function text(key) { return (i18n[lang()] || i18n['zh-CN'])[key] || key; }
+    function hideContextMenu() {
+      $('contextMenu').classList.remove('open');
+    }
+    function showContextMenu(event, items) {
+      const menu = $('contextMenu');
+      menu.innerHTML = '';
+      for (const [label, action] of items) {
+        const item = document.createElement('div');
+        item.className = 'context-item';
+        item.textContent = label;
+        item.onclick = () => {
+          hideContextMenu();
+          action();
+        };
+        menu.append(item);
+      }
+      menu.style.left = Math.min(event.clientX, window.innerWidth - 180) + 'px';
+      menu.style.top = Math.min(event.clientY, window.innerHeight - 160) + 'px';
+      menu.classList.add('open');
+    }
     function translateUi() {
       $('title').textContent = text('title');
-      $('addGroup').textContent = text('addGroup');
+      $('addGroup').textContent = icons.addGroup;
+      $('addGroup').title = text('addGroup');
+      $('addGroup').setAttribute('aria-label', text('addGroup'));
       $('serverName').placeholder = text('serverPlaceholder');
       $('serverNameLabel').textContent = text('name');
       $('hostLabel').textContent = text('host');
@@ -593,9 +637,9 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
         const name = document.createElement('div');
         name.className = 'group-name';
         name.textContent = group.id === 'default' ? text('defaultGroup') : group.name;
-        const add = mini(text('addServer'), () => openServerDialog(group.id));
-        const rename = mini(text('renameGroup'), () => renameGroup(group));
-        const del = mini(text('deleteGroup'), () => deleteGroup(group));
+        const add = mini(icons.addServer, text('addServer'), () => openServerDialog(group.id));
+        const rename = mini(icons.renameGroup, text('renameGroup'), () => renameGroup(group));
+        const del = mini(icons.deleteGroup, text('deleteGroup'), () => deleteGroup(group));
         for (const button of [add, rename, del]) {
           button.onclick = ((handler) => (event) => {
             event.preventDefault();
@@ -603,7 +647,20 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
             handler();
           })(button.onclick);
         }
-        head.append(chevron, name, add, rename, del);
+        const groupActions = document.createElement('div');
+        groupActions.className = 'actions-inline';
+        groupActions.append(add, rename, del);
+        head.oncontextmenu = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          showContextMenu(event, [
+            [text('addGroup'), () => post('requestAddGroup')],
+            [text('renameGroup'), () => renameGroup(group)],
+            [text('deleteGroup'), () => deleteGroup(group)],
+            [text('addServer'), () => openServerDialog(group.id)]
+          ]);
+        };
+        head.append(chevron, name, groupActions);
         wrap.append(head);
         const children = document.createElement('div');
         children.className = 'children';
@@ -633,9 +690,22 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
           title.textContent = server.name === '生产服务器' ? text('serverPlaceholder') : (server.name || server.host);
           const meta = document.createElement('div');
           meta.className = 'server-meta';
-          meta.textContent = server.username + '@' + server.host + ':' + server.port + ' · ' + (server.encoding === 'gb18030' ? 'GB2312/GBK' : 'UTF-8');
+          meta.textContent = server.username + '@' + server.host + ':' + server.port;
           main.append(title, meta);
-          row.append(icon, main, mini(text('edit'), () => openServerDialog(group.id, server)), mini(text('delete'), () => deleteServer(group, server)));
+          row.oncontextmenu = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            selectedServerId = server.id;
+            render();
+            showContextMenu(event, [
+              [text('edit'), () => openServerDialog(group.id, server)],
+              [text('delete'), () => deleteServer(group, server)]
+            ]);
+          };
+          const serverActions = document.createElement('div');
+          serverActions.className = 'actions-inline';
+          serverActions.append(mini(icons.edit, text('edit'), () => openServerDialog(group.id, server)), mini(icons.delete, text('delete'), () => deleteServer(group, server)));
+          row.append(icon, main, serverActions);
           children.append(row);
         }
         wrap.append(children);
@@ -643,10 +713,12 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    function mini(text, onClick) {
+    function mini(icon, label, onClick) {
       const button = document.createElement('button');
       button.className = 'mini secondary';
-      button.textContent = text;
+      button.textContent = icon;
+      button.title = label;
+      button.setAttribute('aria-label', label);
       button.onclick = onClick;
       return button;
     }
@@ -681,6 +753,16 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     $('addGroup').onclick = () => {
       post('requestAddGroup');
     };
+    document.body.addEventListener('click', hideContextMenu);
+    window.addEventListener('blur', hideContextMenu);
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideContextMenu();
+    });
+    document.body.addEventListener('contextmenu', (event) => {
+      if (event.target.closest('.group-head') || event.target.closest('.server') || event.target.closest('.modal')) return;
+      event.preventDefault();
+      showContextMenu(event, [[text('addGroup'), () => post('requestAddGroup')]]);
+    });
     $('cancelServer').onclick = closeServerDialog;
     $('serverModal').onclick = (event) => { if (event.target === $('serverModal')) closeServerDialog(); };
     $('saveServer').onclick = () => {
@@ -948,7 +1030,7 @@ class TerminalPage {
     .status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
     button { cursor: pointer; padding: 6px 10px; border-radius: 5px; border: 1px solid var(--vscode-button-border, transparent); color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; }
     button:hover { background: var(--vscode-button-hoverBackground); }
-    #terminal { width: 100%; height: 100%; min-height: 0; padding: 8px; background: var(--vscode-editor-background); overflow: hidden; }
+    #terminal { width: 100%; height: 100%; min-height: 0; padding: 0; background: var(--vscode-editor-background); overflow: hidden; }
     .xterm { height: 100%; }
     .xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
     .context-menu { position: fixed; display: none; min-width: 150px; z-index: 20; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
@@ -1120,6 +1202,9 @@ class TransferPage {
           break;
         case 'loadTextChunk':
           await this.loadTextChunk(String(message.path ?? ''), normalizePreviewEncoding(String(message.encoding ?? ''), this.server.encoding), Number(message.offset) || 0);
+          break;
+        case 'loadDbfChunk':
+          await this.loadDbfChunk(String(message.path ?? ''), normalizePreviewEncoding(String(message.encoding ?? ''), this.server.encoding), Number(message.recordOffset) || 0);
           break;
       }
     } catch (error) {
@@ -1348,6 +1433,10 @@ class TransferPage {
       await this.connect();
     }
     this.ensureSftp();
+    if (isDbfFile(remotePath)) {
+      await this.openDbfFile(remotePath, encoding);
+      return;
+    }
     const preview = await this.readRemoteTextChunk(remotePath, encoding, 0);
     this.post({
       type: 'textPreview',
@@ -1369,6 +1458,23 @@ class TransferPage {
     }
   }
 
+  private async openDbfFile(remotePath: string, encoding: PreviewEncoding): Promise<void> {
+    const preview = await this.readDbfPreview(remotePath, encoding, 0);
+    this.post({
+      type: 'dbfPreview',
+      path: remotePath,
+      name: basenameRemote(remotePath),
+      language: 'dbf',
+      encoding,
+      fields: preview.fields,
+      rows: preview.rows,
+      recordCount: preview.recordCount,
+      nextRecord: preview.nextRecord,
+      done: preview.done
+    });
+    this.log(`${t(this.settings.language, 'previewing')}: ${remotePath}`);
+  }
+
   private async loadTextChunk(remotePath: string, encoding: PreviewEncoding, offset: number): Promise<void> {
     if (!remotePath) return;
     if (!this.sftp || !this.connected) {
@@ -1387,6 +1493,23 @@ class TransferPage {
     });
   }
 
+  private async loadDbfChunk(remotePath: string, encoding: PreviewEncoding, recordOffset: number): Promise<void> {
+    if (!remotePath) return;
+    if (!this.sftp || !this.connected) {
+      await this.connect();
+    }
+    this.ensureSftp();
+    const preview = await this.readDbfPreview(remotePath, encoding, recordOffset);
+    this.post({
+      type: 'dbfChunk',
+      path: remotePath,
+      encoding,
+      rows: preview.rows,
+      nextRecord: preview.nextRecord,
+      done: preview.done
+    });
+  }
+
   private async readRemoteTextChunk(remotePath: string, encoding: PreviewEncoding, offset: number): Promise<TextPreviewResult> {
     const chunkBytes = 512 * 1024;
     const attrs = await this.stat(remotePath);
@@ -1402,6 +1525,84 @@ class TransferPage {
     const text = encoding === 'gb2312' ? iconv.decode(buffer, 'gb18030') : buffer.toString('utf8');
     const nextOffset = offset + buffer.length;
     return { content: text, binary: false, done: nextOffset >= size, nextOffset, size };
+  }
+
+  private async readDbfPreview(remotePath: string, encoding: PreviewEncoding, recordOffset: number): Promise<DbfPreviewResult> {
+    const headerStart = await this.readRemoteBytes(remotePath, 0, 4096);
+    if (headerStart.length < 32) {
+      throw new Error(t(this.settings.language, 'invalidDbfFile'));
+    }
+    const recordCount = headerStart.readUInt32LE(4);
+    const headerLength = headerStart.readUInt16LE(8);
+    const recordLength = headerStart.readUInt16LE(10);
+    if (headerLength < 33 || recordLength < 1) {
+      throw new Error(t(this.settings.language, 'invalidDbfFile'));
+    }
+    const header = headerStart.length >= headerLength ? headerStart.subarray(0, headerLength) : await this.readRemoteBytes(remotePath, 0, headerLength);
+    const fields = this.parseDbfFields(header, encoding);
+    const rowsPerChunk = 300;
+    const safeRecordOffset = Math.max(0, Math.min(recordOffset, recordCount));
+    const recordsToRead = Math.min(rowsPerChunk, recordCount - safeRecordOffset);
+    if (recordsToRead <= 0) {
+      return { fields, rows: [], recordCount, nextRecord: recordCount, done: true };
+    }
+    const dataOffset = headerLength + safeRecordOffset * recordLength;
+    const data = await this.readRemoteBytes(remotePath, dataOffset, recordsToRead * recordLength);
+    const rows = this.parseDbfRows(data, fields, recordLength, encoding);
+    const nextRecord = safeRecordOffset + recordsToRead;
+    return { fields, rows, recordCount, nextRecord, done: nextRecord >= recordCount };
+  }
+
+  private parseDbfFields(header: Buffer, encoding: PreviewEncoding): DbfField[] {
+    const fields: DbfField[] = [];
+    for (let offset = 32; offset + 32 <= header.length; offset += 32) {
+      if (header[offset] === 0x0d) break;
+      const nameBuffer = header.subarray(offset, offset + 11);
+      const zero = nameBuffer.indexOf(0);
+      const rawName = zero >= 0 ? nameBuffer.subarray(0, zero) : nameBuffer;
+      const name = this.decodeDbfText(rawName, encoding) || `FIELD_${fields.length + 1}`;
+      fields.push({
+        name,
+        type: String.fromCharCode(header[offset + 11] || 0),
+        length: header[offset + 16] || 0,
+        decimalCount: header[offset + 17] || 0
+      });
+    }
+    return fields;
+  }
+
+  private parseDbfRows(data: Buffer, fields: DbfField[], recordLength: number, encoding: PreviewEncoding): string[][] {
+    const rows: string[][] = [];
+    for (let offset = 0; offset + recordLength <= data.length; offset += recordLength) {
+      const record = data.subarray(offset, offset + recordLength);
+      if (record[0] === 0x2a) continue;
+      let fieldOffset = 1;
+      const row: string[] = [];
+      for (const field of fields) {
+        const raw = record.subarray(fieldOffset, fieldOffset + field.length);
+        row.push(this.formatDbfValue(raw, field, encoding));
+        fieldOffset += field.length;
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  private formatDbfValue(raw: Buffer, field: DbfField, encoding: PreviewEncoding): string {
+    const value = this.decodeDbfText(raw, encoding).trim();
+    if (field.type === 'D' && /^\d{8}$/.test(value)) {
+      return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+    }
+    if (field.type === 'L') {
+      const normalized = value.toUpperCase();
+      if (['Y', 'T'].includes(normalized)) return 'true';
+      if (['N', 'F'].includes(normalized)) return 'false';
+    }
+    return value;
+  }
+
+  private decodeDbfText(raw: Buffer, encoding: PreviewEncoding): string {
+    return encoding === 'gb2312' ? iconv.decode(raw, 'gb18030') : raw.toString('utf8');
   }
 
   private stat(remotePath: string): Promise<{ size: number; mtime: number }> {
@@ -1519,6 +1720,8 @@ class TransferPage {
     .csv-table { width: max-content; min-width: 100%; border-collapse: collapse; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); }
     .csv-table th, .csv-table td { max-width: 320px; padding: 5px 8px; border: 1px solid var(--vscode-panel-border); white-space: pre-wrap; vertical-align: top; }
     .csv-table th { position: sticky; top: 0; z-index: 1; color: var(--vscode-editor-foreground); background: var(--vscode-sideBar-background); font-weight: 700; }
+    .csv-table .row-index { position: sticky; left: 0; z-index: 2; min-width: 54px; max-width: 72px; text-align: right; color: var(--vscode-editorLineNumber-foreground); background: var(--vscode-editorGutter-background, var(--vscode-editor-background)); }
+    .csv-table th.row-index { top: 0; z-index: 3; background: var(--vscode-sideBar-background); }
     .preview-note { padding: 6px 10px; color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground)); background: var(--vscode-editorWarning-background, var(--vscode-inputValidation-warningBackground, transparent)); border-bottom: 1px solid var(--vscode-panel-border); }
     .unsupported-preview { display: grid; place-items: center; min-height: 220px; padding: 24px; color: var(--vscode-descriptionForeground); font-size: 14px; text-align: center; }
     .modal { position: fixed; inset: 0; display: none; grid-template-rows: minmax(0, 1fr); padding: 18px; background: rgba(0,0,0,.42); z-index: 10; }
@@ -1585,6 +1788,7 @@ class TransferPage {
     let currentPreviewLanguage = 'text';
     let currentPreviewDone = true;
     let currentPreviewNextOffset = 0;
+    let currentDbfNextRecord = 0;
     let currentPreviewLoading = false;
     let previewFontSize = 12;
     let pendingPreviewLine = '';
@@ -1749,12 +1953,26 @@ class TransferPage {
       const rows = parseCsv(content);
       if (!rows.length) return '<div class="unsupported-preview"></div>';
       const head = rows[0];
-      let html = '<table class="csv-table"><thead><tr>';
+      let html = '<table class="csv-table"><thead><tr><th class="row-index">#</th>';
       for (const cell of head) html += '<th>' + escapeHtml(cell) + '</th>';
       html += '</tr></thead><tbody>';
-      for (const row of rows.slice(1)) {
-        html += '<tr>';
+      for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+        const row = rows[rowIndex];
+        html += '<tr><td class="row-index">' + rowIndex + '</td>';
         for (let index = 0; index < Math.max(row.length, head.length); index += 1) html += '<td>' + escapeHtml(row[index] || '') + '</td>';
+        html += '</tr>';
+      }
+      return html + '</tbody></table>';
+    }
+    function renderDbfTable(fields, rows, startIndex = 1) {
+      const headers = fields && fields.length ? fields.map((field) => field.name || '') : [];
+      let html = '<table class="csv-table"><thead><tr><th class="row-index">#</th>';
+      for (const header of headers) html += '<th>' + escapeHtml(header) + '</th>';
+      html += '</tr></thead><tbody>';
+      for (let rowIndex = 0; rowIndex < (rows || []).length; rowIndex += 1) {
+        const row = rows[rowIndex];
+        html += '<tr><td class="row-index">' + (startIndex + rowIndex) + '</td>';
+        for (let index = 0; index < Math.max(row.length, headers.length); index += 1) html += '<td>' + escapeHtml(row[index] || '') + '</td>';
         html += '</tr>';
       }
       return html + '</tbody></table>';
@@ -1816,6 +2034,7 @@ class TransferPage {
       currentPreviewLanguage = message.language || 'text';
       currentPreviewDone = true;
       currentPreviewNextOffset = 0;
+      currentDbfNextRecord = 0;
       currentPreviewLoading = false;
       csvTableMode = false;
         $('toggleCsvView').style.display = 'none';
@@ -1830,12 +2049,28 @@ class TransferPage {
       currentPreviewLanguage = message.language || 'text';
       currentPreviewDone = Boolean(message.done);
       currentPreviewNextOffset = Number(message.nextOffset) || 0;
+      currentDbfNextRecord = 0;
       currentPreviewLoading = false;
       csvTableMode = false;
       $('toggleCsvView').style.display = currentPreviewLanguage === 'csv' ? '' : 'none';
       $('toggleCsvView').textContent = '${t(lang, 'tablePreview')}';
       $('previewEncoding').value = currentPreviewEncoding;
       renderTextPreview(currentPreviewContent, currentPreviewLanguage, currentPreviewDone);
+      $('preview').classList.add('open');
+    }
+    function renderDbfPreview(message) {
+      $('previewTitle').textContent = message.path || message.name || '';
+      currentPreviewPath = message.path || '';
+      currentPreviewEncoding = message.encoding || currentPreviewEncoding;
+      currentPreviewContent = JSON.stringify({ fields: message.fields || [], rows: message.rows || [] });
+      currentPreviewLanguage = 'dbf';
+      currentPreviewDone = Boolean(message.done);
+      currentDbfNextRecord = Number(message.nextRecord) || 0;
+      currentPreviewLoading = false;
+      csvTableMode = true;
+      $('toggleCsvView').style.display = 'none';
+      $('previewEncoding').value = currentPreviewEncoding;
+      $('code').innerHTML = renderDbfTable(message.fields || [], message.rows || []);
       $('preview').classList.add('open');
     }
     function appendPreviewChunk(message) {
@@ -1847,11 +2082,40 @@ class TransferPage {
       if (csvTableMode) $('code').innerHTML = renderCsvTable(currentPreviewContent);
       else appendTextPreviewChunk(message.content || '', currentPreviewLanguage, currentPreviewDone);
     }
+    function appendDbfChunk(message) {
+      if (message.path !== currentPreviewPath || message.encoding !== currentPreviewEncoding || currentPreviewLanguage !== 'dbf') return;
+      currentPreviewLoading = false;
+      currentPreviewDone = Boolean(message.done);
+      const startIndex = currentDbfNextRecord + 1;
+      currentDbfNextRecord = Number(message.nextRecord) || currentDbfNextRecord;
+      const tableBody = $('code').querySelector('tbody');
+      if (!tableBody) return;
+      const fragment = document.createDocumentFragment();
+      for (let rowIndex = 0; rowIndex < (message.rows || []).length; rowIndex += 1) {
+        const row = message.rows[rowIndex];
+        const tr = document.createElement('tr');
+        const indexCell = document.createElement('td');
+        indexCell.className = 'row-index';
+        indexCell.textContent = String(startIndex + rowIndex);
+        tr.append(indexCell);
+        for (const cell of row) {
+          const td = document.createElement('td');
+          td.textContent = cell || '';
+          tr.append(td);
+        }
+        fragment.append(tr);
+      }
+      tableBody.append(fragment);
+    }
     function loadMorePreviewIfNeeded() {
       const code = $('code');
       if (!currentPreviewPath || currentPreviewDone || currentPreviewLoading) return;
       if (code.scrollTop + code.clientHeight < code.scrollHeight - 700) return;
       currentPreviewLoading = true;
+      if (currentPreviewLanguage === 'dbf') {
+        post('loadDbfChunk', { path: currentPreviewPath, encoding: currentPreviewEncoding, recordOffset: currentDbfNextRecord });
+        return;
+      }
       post('loadTextChunk', { path: currentPreviewPath, encoding: currentPreviewEncoding, offset: currentPreviewNextOffset });
     }
     function localParentPath(value) {
@@ -1963,6 +2227,8 @@ class TransferPage {
       }
       if (message.type === 'textPreview') renderPreview(message);
       if (message.type === 'textChunk') appendPreviewChunk(message);
+      if (message.type === 'dbfPreview') renderDbfPreview(message);
+      if (message.type === 'dbfChunk') appendDbfChunk(message);
       if (message.type === 'log') {
         appendLog(message.text || '');
       }
@@ -2128,6 +2394,7 @@ function t(language: Language, key: string, arg?: string): string {
       previewFontSize: '预览字体大小',
       tablePreview: '表格预览',
       textPreview: '文本预览',
+      invalidDbfFile: '无效的 DBF 文件。',
       close: '关闭',
       copySession: '复制会话',
       renameSession: '修改会话名',
@@ -2189,6 +2456,7 @@ function t(language: Language, key: string, arg?: string): string {
       previewFontSize: 'Preview font size',
       tablePreview: 'Table Preview',
       textPreview: 'Text Preview',
+      invalidDbfFile: 'Invalid DBF file.',
       close: 'Close',
       copySession: 'Copy Session',
       renameSession: 'Rename Session',
@@ -2212,6 +2480,7 @@ function isTextPreviewFile(remotePath: string): boolean {
 
 function previewLanguage(remotePath: string): string {
   const extension = path.posix.extname(remotePath).toLowerCase();
+  if (extension === '.dbf') return 'dbf';
   if (['.xml', '.html', '.htm'].includes(extension)) return extension.slice(1);
   if (['.ini', '.conf', '.cfg', '.properties', '.env'].includes(extension)) return 'ini';
   if (extension === '.csv') return 'csv';
@@ -2224,6 +2493,10 @@ function previewLanguage(remotePath: string): string {
   if (['.py'].includes(extension)) return 'python';
   if (['.sh'].includes(extension)) return 'shell';
   return 'text';
+}
+
+function isDbfFile(remotePath: string): boolean {
+  return path.posix.extname(remotePath).toLowerCase() === '.dbf';
 }
 
 function isLikelyBinary(buffer: Buffer): boolean {
