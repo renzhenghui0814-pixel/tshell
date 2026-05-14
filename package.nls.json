@@ -1,4 +1,5 @@
 {
   "command.copySession.title": "tshell: Copy Session",
-  "command.renameSession.title": "tshell: Rename Session"
+  "command.renameSession.title": "tshell: Rename Session",
+  "command.openTransfer.title": "tshell: File Transfer"
 }

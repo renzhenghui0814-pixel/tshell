@@ -1,4 +1,5 @@
 {
   "command.copySession.title": "tshell: 复制会话",
-  "command.renameSession.title": "tshell: 修改会话名"
+  "command.renameSession.title": "tshell: 修改会话名",
+  "command.openTransfer.title": "tshell: 文件传输"
 }

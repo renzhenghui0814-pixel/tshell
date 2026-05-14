@@ -119,6 +119,9 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand('tshell.renameSession', () => {
       void TerminalPage.renameActiveSession();
+    }),
+    vscode.commands.registerCommand('tshell.openTransfer', () => {
+      TerminalPage.openActiveTransfer();
     })
   );
 }
@@ -978,8 +981,20 @@ class TerminalPage {
     await TerminalPage.active.renameSession();
   }
 
+  static openActiveTransfer(): void {
+    if (!TerminalPage.active) {
+      void vscode.window.showInformationMessage(t(vsCodeLanguage(), 'noActiveSession'));
+      return;
+    }
+    TerminalPage.active.openTransfer();
+  }
+
   private copySession(): void {
     new TerminalPage(this.context, this.server, this.auth, this.settings, this.panel.viewColumn ?? vscode.ViewColumn.One, TerminalPage.nextTitle(this.baseTitle));
+  }
+
+  private openTransfer(): void {
+    new TransferPage(this.context, this.server, this.auth, this.settings, vscode.ViewColumn.Beside);
   }
 
   private static nextTitle(baseTitle: string): string {
@@ -1014,7 +1029,7 @@ class TerminalPage {
           this.shell?.setWindow(this.terminalRows, this.terminalCols, 0, 0);
           break;
         case 'openTransfer':
-          new TransferPage(this.context, this.server, this.auth, this.settings, vscode.ViewColumn.Beside);
+          this.openTransfer();
           break;
         case 'copySession':
           this.copySession();
@@ -1038,13 +1053,7 @@ class TerminalPage {
     if (this.terminalTranscript) {
       this.post({ type: 'snapshot', output: this.terminalTranscript });
     }
-    if (this.statusText) {
-      this.post({ type: 'status', text: this.statusText });
-    }
     await this.connect();
-    if (this.connected && this.statusText) {
-      this.post({ type: 'connected', text: this.statusText });
-    }
   }
 
   private async connect(): Promise<void> {
@@ -1079,7 +1088,7 @@ class TerminalPage {
       this.shell.on('close', () => this.markClosed(t(this.settings.language, 'connectionClosedRetryEnter')));
       this.client.once('close', () => this.markClosed(t(this.settings.language, 'sshClosedRetryEnter')));
       this.connected = true;
-      this.updateStatus(`${t(this.settings.language, 'connected')}: ${this.server.username}@${this.server.host}`, 'connected');
+      this.updateStatus(`${t(this.settings.language, 'connected')}: ${this.server.username}@${this.server.host}`, 'connected', true);
       this.shell.setWindow(this.terminalRows, this.terminalCols, 0, 0);
     } finally {
       this.connecting = false;
@@ -1125,9 +1134,16 @@ class TerminalPage {
     }
   }
 
-  private updateStatus(text: string, type: 'status' | 'connected' = 'status'): void {
+  private updateStatus(text: string, type: 'status' | 'connected' = 'status', clear = false): void {
     this.statusText = text;
-    this.post({ type, text });
+    const line = `\r\n${text}\r\n`;
+    if (clear) {
+      this.terminalTranscript = '';
+      this.post({ type, text, clear: true, output: '' });
+      return;
+    }
+    this.appendTranscript(line);
+    this.post({ type: 'output', data: line });
   }
 
   private post(message: Record<string, unknown>): void {
@@ -1165,7 +1181,6 @@ class TerminalPage {
     const xtermCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
     const fitJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'addon-fit', 'lib', 'addon-fit.js'));
     const fileTransferText = t(this.settings.language, 'fileTransfer');
-    const readyText = t(this.settings.language, 'readyConnect');
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1176,22 +1191,23 @@ class TerminalPage {
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; height: 100%; }
-    body { margin: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); }
-    .bar { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
-    .status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vscode-descriptionForeground); }
-    button { cursor: pointer; padding: 6px 10px; border-radius: 5px; border: 1px solid var(--vscode-button-border, transparent); color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; }
-    button:hover { background: var(--vscode-button-hoverBackground); }
-    #terminal { width: 100%; height: 100%; min-height: 0; padding: 0; background: var(--vscode-editor-background); overflow: hidden; }
-    .xterm { height: 100%; }
+    body { position: relative; margin: 0; overflow: hidden; color: var(--vscode-foreground); background: var(--vscode-editor-background); font-family: var(--vscode-font-family); }
+    #terminal { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; padding: 0; background: var(--vscode-editor-background); overflow: hidden; }
+    .transfer-float { position: absolute; top: 6px; right: 8px; z-index: 5; width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; color: #22c55e; background: transparent; cursor: pointer; }
+    .transfer-float:hover { background: color-mix(in srgb, #22c55e 18%, transparent); }
+    .transfer-float svg { width: 23px; height: 23px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,.38)); }
+    .xterm { height: 100%; padding: 0; }
     .xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
   </style>
 </head>
 <body>
-  <div class="bar">
-    <div id="status" class="status">${readyText}</div>
-    <button id="transfer">${fileTransferText}</button>
-  </div>
   <div id="terminal"></div>
+  <button id="transfer" class="transfer-float" title="${fileTransferText}" aria-label="${fileTransferText}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3.5 6.5h6l2 2h9v9.5a2 2 0 0 1-2 2h-15a2 2 0 0 1-2-2v-9.5a2 2 0 0 1 2-2Z"></path>
+      <path d="M3.5 8.5v-2.5a2 2 0 0 1 2-2h4l2 2h5a2 2 0 0 1 2 2v.5"></path>
+    </svg>
+  </button>
   <script nonce="${nonce}" src="${xtermJs}"></script>
   <script nonce="${nonce}" src="${fitJs}"></script>
   <script nonce="${nonce}">
@@ -1234,17 +1250,19 @@ class TerminalPage {
     term.loadAddon(fitAddon);
     term.open(terminalElement);
     term.focus();
+    const transferButton = document.getElementById('transfer');
     terminalElement.addEventListener('mousedown', () => term.focus());
     document.body.addEventListener('mousedown', (event) => {
-      if (event.target && event.target.id !== 'transfer') term.focus();
+      if (!transferButton.contains(event.target)) term.focus();
     });
+    transferButton.addEventListener('click', () => vscode.postMessage({ type: 'openTransfer' }));
+    transferButton.addEventListener('contextmenu', (event) => event.preventDefault());
     term.onData((data) => vscode.postMessage({ type: 'input', data }));
     term.onSelectionChange(() => {
       if (term.hasSelection()) {
         vscode.postMessage({ type: 'copyText', text: term.getSelection() });
       }
     });
-    document.getElementById('transfer').onclick = () => vscode.postMessage({ type: 'openTransfer' });
     document.body.addEventListener('contextmenu', (event) => {
       event.preventDefault();
     });
@@ -1274,8 +1292,11 @@ class TerminalPage {
       }
       if (message.type === 'output') term.write(message.data || '');
       if (message.type === 'clipboardText' && message.text) vscode.postMessage({ type: 'input', data: message.text });
-      if (message.type === 'status' || message.type === 'connected') document.getElementById('status').textContent = message.text || '';
       if (message.type === 'connected') {
+        if (message.clear) {
+          term.reset();
+          term.write(message.output || '');
+        }
         scheduleResize();
         term.focus();
       }
@@ -1889,10 +1910,9 @@ class TransferPage {
     .unsupported-preview { display: grid; place-items: center; min-height: 220px; padding: 24px; color: var(--vscode-descriptionForeground); font-size: 14px; text-align: center; }
     .modal { position: fixed; inset: 0; display: none; grid-template-rows: minmax(0, 1fr); padding: 18px; background: rgba(0,0,0,.42); z-index: 10; }
     .modal.open { display: grid; }
-    .picker { display: grid; grid-template-rows: auto minmax(180px, 1fr) auto; min-height: 0; border: 1px solid var(--vscode-panel-border); border-radius: 8px; background: var(--vscode-editor-background); overflow: hidden; }
-    .pickerbar { display: grid; grid-template-columns: minmax(160px, 1fr) auto; gap: 8px; padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
+    .picker { display: grid; grid-template-rows: auto minmax(180px, 1fr); min-height: 0; border: 1px solid var(--vscode-panel-border); border-radius: 8px; background: var(--vscode-editor-background); overflow: hidden; }
+    .pickerbar { display: grid; grid-template-columns: minmax(160px, 1fr) auto auto auto auto; gap: 8px; padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
     .local-list { overflow: auto; }
-    .picker-actions { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 8px; border-top: 1px solid var(--vscode-panel-border); }
     .context-menu { position: fixed; display: none; z-index: 20; min-width: 120px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
     .context-menu.open { display: block; }
     .context-item { padding: 6px 10px; border-radius: 3px; cursor: pointer; user-select: none; white-space: nowrap; }
@@ -1902,9 +1922,9 @@ class TransferPage {
 <body>
   <div class="toolbar">
     <input id="path" value=".">
-    <button id="refresh">${t(lang, 'refresh')}</button>
-    <button id="upload">${t(lang, 'upload')}</button>
-    <button id="downloadSelected">${t(lang, 'downloadSelected')}</button>
+    <button id="refresh" title="${t(lang, 'refresh')}">↻</button>
+    <button id="downloadSelected" title="${t(lang, 'download')}">↓</button>
+    <button id="upload" title="${t(lang, 'upload')}">↑</button>
   </div>
   <div class="list" id="list"></div>
   <div id="preview" class="preview">
@@ -1929,18 +1949,24 @@ class TransferPage {
   <div id="logContextMenu" class="context-menu">
     <div id="copyLog" class="context-item">${t(lang, 'copy')}</div>
   </div>
+  <div id="fileContextMenu" class="context-menu">
+    <div id="menuDownload" class="context-item">${t(lang, 'download')}</div>
+    <div id="menuUpload" class="context-item">${t(lang, 'upload')}</div>
+    <div id="menuRefresh" class="context-item">${t(lang, 'refresh')}</div>
+  </div>
+  <div id="uploadContextMenu" class="context-menu">
+    <div id="menuUploadSelected" class="context-item">${t(lang, 'upload')}</div>
+  </div>
   <div id="uploadModal" class="modal">
     <div class="picker">
       <div class="pickerbar">
         <input id="localPath" value="">
-        <button id="localUp">${t(lang, 'up')}</button>
+        <button id="localUp" title="${t(lang, 'up')}">←</button>
+        <button id="localRefresh" title="${t(lang, 'refresh')}">↻</button>
+        <button id="confirmUpload" title="${t(lang, 'upload')}">↑</button>
+        <button id="cancelUpload" title="${t(lang, 'cancel')}">×</button>
       </div>
       <div class="local-list" id="localList"></div>
-      <div class="picker-actions">
-        <div id="localHint" class="status" style="border-top:0;padding:6px 0">${t(lang, 'pickerHint')}</div>
-        <button id="confirmUpload">${t(lang, 'uploadSelected')}</button>
-        <button id="cancelUpload">${t(lang, 'cancel')}</button>
-      </div>
     </div>
   </div>
   <script nonce="${nonce}">
@@ -1966,8 +1992,22 @@ class TransferPage {
     let previewHighlightState = { blockComment: false };
     let csvTableMode = false;
     const logMenu = $('logContextMenu');
+    const fileMenu = $('fileContextMenu');
+    const uploadMenu = $('uploadContextMenu');
     function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
-    function hideLogMenu() { logMenu.classList.remove('open'); }
+    function hideMenus() {
+      logMenu.classList.remove('open');
+      fileMenu.classList.remove('open');
+      uploadMenu.classList.remove('open');
+    }
+    function selectedUploadPaths() {
+      return Array.from(selectedLocalPaths);
+    }
+    function selectedDownloadItems() {
+      return entries
+        .filter((entry) => selectedPaths.has(entry.path))
+        .map((entry) => ({ path: entry.path, isDirectory: entry.type === 'directory' }));
+    }
     function selectedTextWithin(element) {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return '';
@@ -2326,6 +2366,7 @@ class TransferPage {
     function row(entry, parent) {
       const div = document.createElement('div');
       div.className = 'row ' + (entry.type === 'directory' ? 'folder' : '');
+      div.dataset.path = entry.path;
       if (selectedPaths.has(entry.path)) div.classList.add('selected');
       const icon = document.createElement('div');
       icon.textContent = entry.type === 'directory' ? '📁' : '📄';
@@ -2360,6 +2401,7 @@ class TransferPage {
       for (const entry of localEntries) {
         const div = document.createElement('div');
         div.className = 'row ' + (entry.type === 'directory' ? 'folder' : '');
+        div.dataset.path = entry.path;
         if (selectedLocalPaths.has(entry.path)) div.classList.add('selected');
         const icon = document.createElement('div');
         icon.textContent = entry.type === 'directory' ? '📁' : '📄';
@@ -2392,12 +2434,7 @@ class TransferPage {
     });
     $('refresh').onclick = () => post('refresh');
     $('upload').onclick = () => post('upload');
-    $('downloadSelected').onclick = () => {
-      const items = entries
-        .filter((entry) => selectedPaths.has(entry.path))
-        .map((entry) => ({ path: entry.path, isDirectory: entry.type === 'directory' }));
-      post('downloadMany', { items });
-    };
+    $('downloadSelected').onclick = () => post('downloadMany', { items: selectedDownloadItems() });
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'list') {
@@ -2463,6 +2500,7 @@ class TransferPage {
     $('code').addEventListener('scroll', loadMorePreviewIfNeeded);
     $('closePreview').onclick = () => $('preview').classList.remove('open');
     $('localUp').onclick = () => post('listLocal', { path: localParentPath(currentLocalPath) });
+    $('localRefresh').onclick = () => post('listLocal', { path: currentLocalPath });
     $('cancelUpload').onclick = () => $('uploadModal').classList.remove('open');
     $('confirmUpload').onclick = () => {
       post('uploadLocal', { paths: Array.from(selectedLocalPaths) });
@@ -2471,7 +2509,7 @@ class TransferPage {
     document.addEventListener('contextmenu', (event) => {
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-        hideLogMenu();
+        hideMenus();
         return;
       }
       event.preventDefault();
@@ -2479,17 +2517,48 @@ class TransferPage {
         logMenu.style.left = Math.min(event.clientX, window.innerWidth - 140) + 'px';
         logMenu.style.top = Math.min(event.clientY, window.innerHeight - 48) + 'px';
         logMenu.classList.add('open');
+        fileMenu.classList.remove('open');
+      } else if ($('list').contains(target)) {
+        const row = target.closest('.row:not(.header)');
+        if (row && row.dataset.path && !selectedPaths.has(row.dataset.path)) {
+          selectedPaths = new Set([row.dataset.path]);
+          render();
+        }
+        fileMenu.style.left = Math.min(event.clientX, window.innerWidth - 170) + 'px';
+        fileMenu.style.top = Math.min(event.clientY, window.innerHeight - 112) + 'px';
+        fileMenu.classList.add('open');
+        logMenu.classList.remove('open');
+        uploadMenu.classList.remove('open');
+      } else if ($('localList').contains(target)) {
+        const row = target.closest('.row:not(.header)');
+        if (row && row.dataset.path && !selectedLocalPaths.has(row.dataset.path)) {
+          selectedLocalPaths = new Set([row.dataset.path]);
+          renderLocal();
+        }
+        uploadMenu.style.left = Math.min(event.clientX, window.innerWidth - 140) + 'px';
+        uploadMenu.style.top = Math.min(event.clientY, window.innerHeight - 48) + 'px';
+        uploadMenu.classList.add('open');
+        logMenu.classList.remove('open');
+        fileMenu.classList.remove('open');
       } else {
-        hideLogMenu();
+        hideMenus();
       }
     });
     $('copyLog').onclick = () => {
       const selected = selectedTextWithin($('log'));
       post('copyText', { text: selected || $('log').textContent || '' });
-      hideLogMenu();
+      hideMenus();
     };
-    document.addEventListener('click', hideLogMenu);
-    window.addEventListener('blur', hideLogMenu);
+    $('menuUpload').onclick = () => { post('upload'); hideMenus(); };
+    $('menuDownload').onclick = () => { post('downloadMany', { items: selectedDownloadItems() }); hideMenus(); };
+    $('menuRefresh').onclick = () => { post('refresh'); hideMenus(); };
+    $('menuUploadSelected').onclick = () => {
+      post('uploadLocal', { paths: selectedUploadPaths() });
+      $('uploadModal').classList.remove('open');
+      hideMenus();
+    };
+    document.addEventListener('click', hideMenus);
+    window.addEventListener('blur', hideMenus);
     let resizingLog = false;
     $('logResizer').addEventListener('mousedown', () => { resizingLog = true; });
     window.addEventListener('mouseup', () => { resizingLog = false; });
@@ -2609,6 +2678,7 @@ function t(language: Language, key: string, arg?: string): string {
       transferClosedRetry: '文件传输已关闭。刷新或在地址栏按 Enter 可尝试重连。',
       refresh: '刷新',
       upload: '上传',
+      download: '下载',
       downloadSelected: '下载选中',
       up: '上级',
       pickerHint: '单击选择，Ctrl 单击多选，双击文件夹进入。',
@@ -2673,6 +2743,7 @@ function t(language: Language, key: string, arg?: string): string {
       transferClosedRetry: 'File transfer closed. Refresh or press Enter in the path bar to retry.',
       refresh: 'Refresh',
       upload: 'Upload',
+      download: 'Download',
       downloadSelected: 'Download Selected',
       up: 'Up',
       pickerHint: 'Click to select, Ctrl-click for multiple, double-click a folder to open.',

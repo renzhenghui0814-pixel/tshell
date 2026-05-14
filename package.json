@@ -2,7 +2,7 @@
   "name": "tshell",
   "displayName": "tshell",
   "description": "SSH/SFTP client for running Linux commands and transferring files without server-side setup.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "tora-zhren",
   "license": "MIT",
   "icon": "media/tshell.png",
@@ -39,6 +39,10 @@
       {
         "command": "tshell.renameSession",
         "title": "%command.renameSession.title%"
+      },
+      {
+        "command": "tshell.openTransfer",
+        "title": "%command.openTransfer.title%"
       }
     ],
     "viewsContainers": {
@@ -62,14 +66,19 @@
     "menus": {
       "editor/title/context": [
         {
+          "command": "tshell.openTransfer",
+          "when": "activeWebviewPanelId == 'tshell.terminal'",
+          "group": "navigation@1"
+        },
+        {
           "command": "tshell.copySession",
           "when": "activeWebviewPanelId == 'tshell.terminal'",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "tshell.renameSession",
           "when": "activeWebviewPanelId == 'tshell.terminal'",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ]
     }

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.7
+
+- Clear the terminal screen silently after a successful SSH connection so no connection-success log remains in the xterm output.
+- Make the terminal workspace fill the page from the top without an extra blank line.
+- Add a larger transparent floating file-transfer button on terminal pages with a green folder icon.
+- Keep file transfer available as the first terminal tab context-menu action.
+- Refine the file transfer toolbar and context menus with icon actions for refresh, download, and upload.
+- Simplify the upload picker with top-right icon actions for parent, refresh, upload, and cancel.
+- Rename the file transfer download button tooltip to "Download" / "下载".
+
 ## 0.1.6
 
 - Move the config file action from the VS Code view title menu into the tshell sidebar as a compact settings button.
