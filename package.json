@@ -2,7 +2,7 @@
   "name": "tshell",
   "displayName": "tshell",
   "description": "SSH/SFTP client for running Linux commands and transferring files without server-side setup.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "tora-zhren",
   "license": "MIT",
   "icon": "media/tshell.png",
@@ -60,13 +60,6 @@
       ]
     },
     "menus": {
-      "view/title": [
-        {
-          "command": "tshell.openConfig",
-          "when": "view == tshell.view",
-          "group": "navigation"
-        }
-      ],
       "editor/title/context": [
         {
           "command": "tshell.copySession",

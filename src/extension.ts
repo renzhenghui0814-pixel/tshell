@@ -509,7 +509,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     button.secondary { color: var(--vscode-button-secondaryForeground); background: var(--vscode-button-secondaryBackground); }
     input, select { width: 100%; padding: 6px 7px; color: var(--vscode-input-foreground); background: var(--vscode-input-background); }
     label { display: block; margin: 7px 0 3px; color: var(--vscode-descriptionForeground); }
-    .top { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .top { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; align-items: center; margin-bottom: 10px; }
     .title { font-weight: 700; }
     .tree { border-top: 1px solid var(--vscode-panel-border); margin-top: 8px; }
     details.group { border-bottom: 1px solid var(--vscode-panel-border); padding: 6px 0; }
@@ -551,6 +551,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
   <div class="top">
     <div id="title" class="title">远程服务器</div>
     <button id="addGroup" class="mini">添加分组</button>
+    <button id="openConfig" class="mini secondary">⚙</button>
   </div>
   <div id="groups" class="tree"></div>
   <div id="status" class="status"></div>
@@ -597,11 +598,12 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     const $ = (id) => document.getElementById(id);
     let state = { groups: [], passwords: {}, privateKeyPassphrases: {}, config: { settings: { language: 'en-US', showHiddenFiles: false } } };
     let selectedServerId = '';
-    const icons = { addGroup: '+', addServer: '⊕', renameGroup: '✎', deleteGroup: '🗑', edit: '✎', delete: '🗑' };
+    const icons = { addGroup: '+', openConfig: '⚙', addServer: '⊕', renameGroup: '✎', deleteGroup: '🗑', edit: '✎', delete: '🗑' };
     const i18n = {
       'zh-CN': {
         title: '远程服务器',
         addGroup: '添加分组',
+        openConfig: '打开配置文件',
         addServer: '添加服务器',
         renameGroup: '修改分组名',
         deleteGroup: '删除分组',
@@ -634,6 +636,7 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       'en-US': {
         title: 'Remote Servers',
         addGroup: 'Add Group',
+        openConfig: 'Open Config File',
         addServer: 'Add Server',
         renameGroup: 'Rename Group',
         deleteGroup: 'Delete Group',
@@ -694,6 +697,9 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
       $('addGroup').textContent = icons.addGroup;
       $('addGroup').title = text('addGroup');
       $('addGroup').setAttribute('aria-label', text('addGroup'));
+      $('openConfig').textContent = icons.openConfig;
+      $('openConfig').title = text('openConfig');
+      $('openConfig').setAttribute('aria-label', text('openConfig'));
       $('serverName').placeholder = text('serverPlaceholder');
       $('serverNameLabel').textContent = text('name');
       $('hostLabel').textContent = text('host');
@@ -856,6 +862,9 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     $('addGroup').onclick = () => {
       post('requestAddGroup');
     };
+    $('openConfig').onclick = () => {
+      post('openConfig');
+    };
     document.body.addEventListener('click', hideContextMenu);
     window.addEventListener('blur', hideContextMenu);
     window.addEventListener('keydown', (event) => {
@@ -915,6 +924,8 @@ class TerminalPage {
   private connecting = false;
   private terminalCols = 120;
   private terminalRows = 36;
+  private terminalTranscript = '';
+  private statusText = '';
   private readonly baseTitle: string;
 
   constructor(
@@ -992,7 +1003,7 @@ class TerminalPage {
     try {
       switch (message.type) {
         case 'ready':
-          await this.connect();
+          await this.handleReady();
           break;
         case 'input':
           await this.handleInput(String(message.data ?? ''));
@@ -1003,7 +1014,7 @@ class TerminalPage {
           this.shell?.setWindow(this.terminalRows, this.terminalCols, 0, 0);
           break;
         case 'openTransfer':
-          new TransferPage(this.context, this.server, this.auth, this.settings);
+          new TransferPage(this.context, this.server, this.auth, this.settings, vscode.ViewColumn.Beside);
           break;
         case 'copySession':
           this.copySession();
@@ -1023,12 +1034,25 @@ class TerminalPage {
     }
   }
 
+  private async handleReady(): Promise<void> {
+    if (this.terminalTranscript) {
+      this.post({ type: 'snapshot', output: this.terminalTranscript });
+    }
+    if (this.statusText) {
+      this.post({ type: 'status', text: this.statusText });
+    }
+    await this.connect();
+    if (this.connected && this.statusText) {
+      this.post({ type: 'connected', text: this.statusText });
+    }
+  }
+
   private async connect(): Promise<void> {
     if (this.connecting) return;
     if (this.connected && this.shell) return;
     this.connecting = true;
     this.disposeConnection();
-    this.post({ type: 'status', text: `${t(this.settings.language, 'connecting')} ${this.server.username}@${this.server.host}:${this.server.port} ...` });
+    this.updateStatus(`${t(this.settings.language, 'connecting')} ${this.server.username}@${this.server.host}:${this.server.port} ...`);
     try {
       this.client = new Client();
       await new Promise<void>((resolve, reject) => {
@@ -1046,13 +1070,16 @@ class TerminalPage {
       });
 
       this.decoder = iconv.decodeStream(this.server.encoding);
-      this.decoder.on('data', (chunk: string) => this.post({ type: 'output', data: chunk }));
+      this.decoder.on('data', (chunk: string) => {
+        this.appendTranscript(chunk);
+        this.post({ type: 'output', data: chunk });
+      });
       this.shell.pipe(this.decoder);
       this.shell.stderr.pipe(this.decoder);
       this.shell.on('close', () => this.markClosed(t(this.settings.language, 'connectionClosedRetryEnter')));
       this.client.once('close', () => this.markClosed(t(this.settings.language, 'sshClosedRetryEnter')));
       this.connected = true;
-      this.post({ type: 'connected', text: `${t(this.settings.language, 'connected')}: ${this.server.username}@${this.server.host}` });
+      this.updateStatus(`${t(this.settings.language, 'connected')}: ${this.server.username}@${this.server.host}`, 'connected');
       this.shell.setWindow(this.terminalRows, this.terminalCols, 0, 0);
     } finally {
       this.connecting = false;
@@ -1087,7 +1114,20 @@ class TerminalPage {
 
   private report(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    this.post({ type: 'status', text: `${t(this.settings.language, 'connectFailed')}: ${message}` });
+    this.updateStatus(`${t(this.settings.language, 'connectFailed')}: ${message}`);
+  }
+
+  private appendTranscript(data: string): void {
+    const maxTranscriptLength = 300000;
+    this.terminalTranscript += data;
+    if (this.terminalTranscript.length > maxTranscriptLength) {
+      this.terminalTranscript = this.terminalTranscript.slice(this.terminalTranscript.length - maxTranscriptLength);
+    }
+  }
+
+  private updateStatus(text: string, type: 'status' | 'connected' = 'status'): void {
+    this.statusText = text;
+    this.post({ type, text });
   }
 
   private post(message: Record<string, unknown>): void {
@@ -1115,7 +1155,7 @@ class TerminalPage {
     this.connected = false;
     this.shell = undefined;
     this.client = undefined;
-    this.post({ type: 'status', text });
+    this.updateStatus(text);
   }
 
   private renderHtml(): string {
@@ -1228,6 +1268,10 @@ class TerminalPage {
     new MutationObserver(() => term.options.theme = terminalTheme()).observe(document.body, { attributes: true, attributeFilter: ['class'] });
     window.addEventListener('message', (event) => {
       const message = event.data;
+      if (message.type === 'snapshot') {
+        term.reset();
+        term.write(message.output || '');
+      }
       if (message.type === 'output') term.write(message.data || '');
       if (message.type === 'clipboardText' && message.text) vscode.postMessage({ type: 'input', data: message.text });
       if (message.type === 'status' || message.type === 'connected') document.getElementById('status').textContent = message.text || '';
@@ -1245,23 +1289,28 @@ class TerminalPage {
 }
 
 class TransferPage {
+  private static readonly titleCounts = new Map<string, number>();
   private readonly panel: vscode.WebviewPanel;
   private client?: Client;
   private sftp?: SFTPWrapper;
   private currentPath = '.';
   private connected = false;
   private connecting = false;
+  private readonly logLines: string[] = [];
+  private readonly baseTitle: string;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly server: ServerConfig,
     private readonly auth: ResolvedAuth,
-    private readonly settings: AppSettings
+    private readonly settings: AppSettings,
+    viewColumn: vscode.ViewColumn = vscode.ViewColumn.Beside
   ) {
+    this.baseTitle = `${t(settings.language, 'fileTransfer')} - ${server.name || server.host}`;
     this.panel = vscode.window.createWebviewPanel(
       'tshell.transfer',
-      `${t(settings.language, 'fileTransfer')} - ${server.name || server.host}`,
-      vscode.ViewColumn.Two,
+      TransferPage.nextTitle(this.baseTitle),
+      viewColumn,
       { enableScripts: true, retainContextWhenHidden: true }
     );
     this.panel.webview.html = this.renderHtml();
@@ -1269,10 +1318,17 @@ class TransferPage {
     this.panel.onDidDispose(() => this.dispose());
   }
 
+  private static nextTitle(baseTitle: string): string {
+    const current = TransferPage.titleCounts.get(baseTitle) ?? 0;
+    TransferPage.titleCounts.set(baseTitle, current + 1);
+    return current === 0 ? baseTitle : `${baseTitle}(${current})`;
+  }
+
   private async handleMessage(message: WebviewMessage): Promise<void> {
     try {
       switch (message.type) {
         case 'ready':
+          this.post({ type: 'logSnapshot', lines: this.logLines });
           await this.list(this.currentPath);
           break;
         case 'list':
@@ -1740,7 +1796,12 @@ class TransferPage {
   }
 
   private log(text: string): void {
-    this.post({ type: 'log', text });
+    const line = `[${new Date().toLocaleTimeString()}] ${text}`;
+    this.logLines.push(line);
+    if (this.logLines.length > 1000) {
+      this.logLines.splice(0, this.logLines.length - 1000);
+    }
+    this.post({ type: 'log', text: line, formatted: true });
   }
 
   private dispose(): void {
@@ -2346,6 +2407,10 @@ class TransferPage {
         $('path').value = currentPath;
         render();
       }
+      if (message.type === 'logSnapshot') {
+        $('log').textContent = (message.lines || []).join('\\n') + ((message.lines || []).length ? '\\n' : '');
+        $('log').scrollTop = $('log').scrollHeight;
+      }
       if (message.type === 'status') appendLog(message.text || '');
       if (message.type === 'localList') {
         currentLocalPath = message.path || '';
@@ -2360,13 +2425,16 @@ class TransferPage {
       if (message.type === 'dbfPreview') renderDbfPreview(message);
       if (message.type === 'dbfChunk') appendDbfChunk(message);
       if (message.type === 'log') {
-        appendLog(message.text || '');
+        appendLog(message.text || '', Boolean(message.formatted));
       }
     });
-    function appendLog(text) {
+    function appendLog(text, formatted = false) {
       const log = $('log');
-      const time = new Date().toLocaleTimeString();
-      log.textContent += '[' + time + '] ' + text + '\\n';
+      if (formatted) log.textContent += text + '\\n';
+      else {
+        const time = new Date().toLocaleTimeString();
+        log.textContent += '[' + time + '] ' + text + '\\n';
+      }
       log.scrollTop = log.scrollHeight;
     }
     $('localPath').addEventListener('keydown', (event) => {

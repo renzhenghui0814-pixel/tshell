@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6
+
+- Move the config file action from the VS Code view title menu into the tshell sidebar as a compact settings button.
+- Restore terminal status and recent output when a terminal webview is moved or copied to another VS Code window.
+- Restore file transfer operation logs when a transfer webview is moved or copied to another VS Code window.
+- Open file transfer pages beside the terminal and auto-number duplicate transfer tabs for the same server.
+
 ## 0.1.5
 
 - Improve terminal copy and paste behavior: selecting terminal text now copies it immediately, and right-click pastes clipboard text at the cursor.

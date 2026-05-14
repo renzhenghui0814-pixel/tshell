@@ -1,50 +1,155 @@
 # tshell
 
-A lightweight VS Code extension for managing Linux SSH servers, running interactive commands, and transferring files with SFTP.
+tshell is a lightweight SSH and SFTP extension for Visual Studio Code.
 
-The extension only uses standard SSH and SFTP from the VS Code client side. It does not install software, upload helper scripts, or modify the Linux server.
+It helps you manage Linux servers, open interactive shell sessions, and transfer files or folders from a simple VS Code interface. tshell only uses standard client-side SSH/SFTP. It does not install software, upload helper scripts, or modify the remote Linux server.
 
-## Features
+## Key Features
 
-- Manage saved Linux servers in groups.
-- Add, edit, delete, and rename server groups.
-- Add, edit, and delete server configs.
-- Use compact icon actions and right-click menus in the server manager. Right-click blank space to add a group, right-click a group to manage groups or add a server, and right-click a server to edit or delete it.
-- Password login and private key login.
-- Server config includes host, port, user, authentication type, optional encrypted password, optional private key path/passphrase, and input/output encoding.
-- Store groups, servers, language, and file-transfer settings in `tshell.config.json`.
-- Configure Chinese/English UI and hidden file visibility from the JSON config file.
-- Open a server by double-clicking it in the SSH sidebar.
-- Use an xterm-based terminal page that supports ANSI colors, `clear`, `top`, and other interactive shell output.
-- Select terminal text to copy it immediately, and right-click the terminal to paste clipboard text at the cursor.
-- Copy an active terminal session into a new tab in the same editor group.
-- Open a visual file transfer page from the terminal toolbar.
-- Browse remote folders, type a path and press Enter, refresh the current path, upload files/folders with the built-in local picker, and download files/folders.
-- Browse Windows drive roots such as `C:` and `D:` in the built-in upload picker.
-- Select multiple remote files/folders and download them in one operation.
-- Download selected remote entries from the toolbar instead of per-row buttons.
-- Preview common remote text files in the file transfer page with line numbers, basic syntax highlighting, and UTF-8/GB2312 preview encoding selection.
-- Preview CSV and DBF files as tables with row numbers. DBF previews load progressively while scrolling.
-- Open each file preview from the top instead of restoring the previous preview scroll position.
-- Review upload/download history in the resizable file transfer operation log, including each file inside uploaded or downloaded folders.
-- Copy operation log text from a copy-only context menu.
-- Retry SSH/SFTP connections from the terminal with Enter or from the file transfer page with Refresh/path Enter after a disconnect.
-- Show remote file size and last modified time.
+- Manage Linux servers in groups from the tshell activity bar.
+- Add, edit, rename, and delete server groups.
+- Add, edit, and delete server configurations.
+- Store all groups, servers, language, and file-transfer options in `tshell.config.json`.
+- Support password login and private key login.
+- Save passwords and private key passphrases as encrypted values in the config file.
+- Run interactive terminal sessions with xterm.js.
+- Support common terminal programs and ANSI output, including `vi`, `top`, and `clear`.
+- Select terminal text to copy immediately, and right-click the terminal to paste clipboard text.
+- Duplicate and rename terminal sessions from the terminal tab context menu.
+- Open visual SFTP file transfer pages beside the terminal.
+- Upload and download files or folders, including multi-select transfers.
+- Browse remote folders by double-clicking folders or typing a path and pressing Enter.
+- Browse local Windows drive roots such as `C:` and `D:` in the built-in upload picker.
+- View file size and last modified time in the file transfer page.
+- Keep detailed upload/download logs, including each file inside transferred folders.
+- Preview remote files as text with line numbers, syntax highlighting, and UTF-8/GB2312 encoding selection.
+- Preview CSV and DBF files as tables with row numbers.
+- Load large text and DBF previews progressively while scrolling.
+- Restore terminal output/status and transfer logs when VS Code reloads a webview after moving or copying it to another window.
+- Support English and Chinese UI text.
 
-## Development
+## Quick Start
 
-```bash
-npm install
-npm run compile
-```
+1. Open the tshell activity bar item in VS Code.
+2. Click the `+` button to add a group, or use the default group.
+3. Add a server under a group.
+4. Choose `Password` or `Private Key` authentication.
+5. Double-click the server to open a terminal session.
+6. Click `File Transfer` in the terminal toolbar to open the SFTP transfer page.
 
-Press `F5` in VS Code or run the extension development host to test.
+## Server Manager
+
+The server manager is shown in the tshell activity bar view.
+
+Available actions:
+
+- Click `+` in the top toolbar to add a group.
+- Click the settings button in the top toolbar to open `tshell.config.json`.
+- Use group action icons to add a server, rename the group, or delete the group.
+- Use server action icons to edit or delete a server.
+- Right-click blank space to add a group.
+- Right-click a group to add a group, rename/delete the group, or add a server.
+- Right-click a server to edit or delete it.
+- Double-click a server to connect.
+
+## Authentication
+
+tshell supports two SSH authentication modes.
+
+### Password Login
+
+Choose `Password` in the server editor.
+
+- If you enter a password, tshell saves it as `encryptedPassword`.
+- If you leave the password empty, tshell asks for it when connecting.
+
+### Private Key Login
+
+Choose `Private Key` in the server editor.
+
+Required:
+
+- `privateKeyPath`: local private key file path, for example `C:\Users\you\.ssh\id_rsa` or `~/.ssh/id_rsa`.
+
+Optional:
+
+- Private key passphrase. If entered, tshell saves it as `encryptedPrivateKeyPassphrase`.
+
+Passwordless private keys are supported and do not require a login prompt.
+
+## Terminal Usage
+
+Each connected server opens in an xterm-based terminal page.
+
+Supported terminal behavior:
+
+- Interactive shell input and output.
+- ANSI colors and terminal control sequences.
+- `clear` clears the visible terminal.
+- Interactive commands such as `top` and editors such as `vi`.
+- Press Enter after a disconnect to try reconnecting.
+- Select text to copy it immediately.
+- Right-click the terminal content area to paste clipboard text at the cursor.
+- Right-click the terminal tab header to copy the session or rename the session.
+
+Duplicated sessions open in the same editor group as the current terminal. New session titles are numbered automatically, such as `server`, `server(1)`, and `server(2)`.
+
+## File Transfer
+
+Click `File Transfer` in a terminal page to open the SFTP transfer page beside the terminal.
+
+The file transfer page supports:
+
+- Path entry: type a remote path and press Enter.
+- Refresh current remote folder.
+- Double-click folders to enter them.
+- Select one or more remote files/folders.
+- Download selected remote files/folders.
+- Upload local files/folders through the built-in picker.
+- Browse Windows drive roots in the upload picker.
+- Reconnect by pressing Enter in the path field or clicking Refresh after a disconnect.
+- Review detailed operation logs.
+- Drag the log divider to show more or fewer log lines.
+- Right-click the operation log to copy log text.
+
+Opening file transfer multiple times for the same server creates numbered tabs, for example:
+
+- `File Transfer - dev`
+- `File Transfer - dev(1)`
+- `File Transfer - dev(2)`
+
+## File Preview
+
+Double-click a remote file in the file transfer page to preview it.
+
+Preview features:
+
+- All files can be opened for preview.
+- Text files are shown as text.
+- Binary files show an unsupported preview message.
+- Each preview starts from the top.
+- UTF-8 and GB2312 preview encodings are selectable in the preview toolbar.
+- Preview font size can be adjusted.
+- Large text files load progressively while scrolling.
+- Common code/config formats have syntax highlighting.
+- CSV files support text preview and table preview.
+- DBF files support progressive table preview.
+- CSV and DBF table previews include row numbers.
+
+Common highlighted extensions include:
+
+`.c`, `.cpp`, `.h`, `.hpp`, `.java`, `.js`, `.ts`, `.json`, `.xml`, `.html`, `.css`, `.sh`, `.py`, `.txt`, `.ini`, `.conf`, `.cfg`, `.properties`, `.env`, `.csv`, and `.dbf`.
 
 ## Config File
 
-Open the config from the command palette with **tshell: Open Config File**, or from the tshell view title menu. The file is named `tshell.config.json` and is stored in the extension global storage directory managed by VS Code.
+Open the config file from:
 
-Passwords entered in the UI are saved as ciphertext in `encryptedPassword`. You can also omit `encryptedPassword`; tshell will prompt for the login password when connecting.
+- the settings button in the tshell sidebar, or
+- the command palette command `tshell: Open Config File`.
+
+The file is named `tshell.config.json` and is stored in VS Code's extension global storage directory.
+
+Example:
 
 ```json
 {
@@ -58,8 +163,8 @@ Passwords entered in the UI are saved as ciphertext in `encryptedPassword`. You 
       "name": "Default Group",
       "servers": [
         {
-          "id": "server-1",
-          "name": "dev",
+          "id": "server-password",
+          "name": "dev-password",
           "host": "10.0.1.168",
           "port": 22,
           "username": "stock",
@@ -68,13 +173,14 @@ Passwords entered in the UI are saved as ciphertext in `encryptedPassword`. You 
           "encryptedPassword": "enc:v1:..."
         },
         {
-          "id": "server-2",
-          "name": "key-login",
+          "id": "server-key",
+          "name": "dev-key",
           "host": "10.0.1.169",
           "port": 22,
           "username": "ubuntu",
           "authType": "privateKey",
           "privateKeyPath": "C:\\Users\\you\\.ssh\\id_rsa",
+          "encryptedPrivateKeyPassphrase": "enc:v1:...",
           "encoding": "utf-8"
         }
       ]
@@ -83,29 +189,40 @@ Passwords entered in the UI are saved as ciphertext in `encryptedPassword`. You 
 }
 ```
 
-### Supported Options
+## Config Options
 
 | Path | Type | Required | Supported values | Description |
 | --- | --- | --- | --- | --- |
-| `settings.language` | string | No | `en-US`, `zh-CN` | UI language. Defaults to `en-US`. Changes take effect after the view reloads or the extension UI is reopened. |
-| `settings.showHiddenFiles` | boolean | No | `true`, `false` | Whether file transfer lists hidden files/folders. Defaults to `false`. |
-| `groups` | array | Yes | Array of group objects | Server groups shown in the tshell tree view. |
-| `groups[].id` | string | Yes | Any unique string | Stable group ID. Use a unique value. |
-| `groups[].name` | string | Yes | Any display name | Group name shown in the sidebar. |
-| `groups[].servers` | array | Yes | Array of server objects | Servers under this group. |
-| `groups[].servers[].id` | string | Yes | Any unique string | Stable server ID. Use a unique value. |
+| `settings.language` | string | No | `en-US`, `zh-CN` | UI language. Defaults to `en-US`. |
+| `settings.showHiddenFiles` | boolean | No | `true`, `false` | Whether remote and local file lists show hidden files/folders. Defaults to `false`. |
+| `groups` | array | Yes | Group objects | Server groups shown in the tshell tree view. |
+| `groups[].id` | string | Yes | Unique string | Stable group ID. |
+| `groups[].name` | string | Yes | Any display name | Group display name. |
+| `groups[].servers` | array | Yes | Server objects | Servers inside the group. |
+| `groups[].servers[].id` | string | Yes | Unique string | Stable server ID. |
 | `groups[].servers[].name` | string | No | Any display name | Server display name. If empty, the host is used. |
 | `groups[].servers[].host` | string | Yes | Hostname or IP address | Linux SSH server host. |
 | `groups[].servers[].port` | number | No | `1`-`65535` | SSH port. Defaults to `22`. |
 | `groups[].servers[].username` | string | Yes | Linux username | SSH login user. |
 | `groups[].servers[].authType` | string | No | `password`, `privateKey` | SSH authentication type. Defaults to `password`, or `privateKey` when `privateKeyPath` is set. |
-| `groups[].servers[].encoding` | string | No | `utf-8`, `gb18030` | Terminal input/output encoding. Use `gb18030` for GB2312/GBK-like Chinese server output. Defaults to `utf-8`. |
-| `groups[].servers[].encryptedPassword` | string | No | `enc:v1:...` | Encrypted password generated by tshell. Omit this field to be prompted for a password when connecting. |
-| `groups[].servers[].privateKeyPath` | string | No | Local file path | Local private key path for `privateKey` authentication. `~` is supported. |
-| `groups[].servers[].encryptedPrivateKeyPassphrase` | string | No | `enc:v1:...` | Optional encrypted passphrase for encrypted private keys. Omit for passwordless private keys. |
+| `groups[].servers[].encoding` | string | No | `utf-8`, `gb18030` | Terminal input/output encoding. Use `gb18030` for GB2312/GBK-style Chinese output. Defaults to `utf-8`. |
+| `groups[].servers[].encryptedPassword` | string | No | `enc:v1:...` | Encrypted password generated by tshell. Omit it to prompt for a password when connecting. |
+| `groups[].servers[].privateKeyPath` | string | Required for private key login | Local file path | Local private key path. `~` is supported. |
+| `groups[].servers[].encryptedPrivateKeyPassphrase` | string | No | `enc:v1:...` | Optional encrypted private key passphrase generated by tshell. |
 
-### Notes
+## Notes
 
-- Do not write plaintext passwords or private key passphrases into the JSON file. Add or edit the server from the UI if you want tshell to generate encrypted values.
-- File preview encoding is selected in the file transfer preview toolbar (`UTF-8` or `GB2312`) and is not stored in the JSON config.
-- The extension uses only client-side SSH/SFTP. It does not upload scripts, install software, or modify the Linux server.
+- tshell never writes plaintext passwords or private key passphrases to the config file.
+- Use the server editor UI to generate encrypted password/passphrase values.
+- Do not manually write plaintext secrets into `tshell.config.json`.
+- File preview encoding is selected in the preview toolbar and is not stored in the config file.
+- tshell only uses client-side SSH/SFTP and does not modify the Linux server.
+
+## Development
+
+```bash
+npm install
+npm run compile
+```
+
+Press `F5` in VS Code to launch an extension development host.
