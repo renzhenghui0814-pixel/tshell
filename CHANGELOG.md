@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.5
+
+- Improve terminal copy and paste behavior: selecting terminal text now copies it immediately, and right-click pastes clipboard text at the cursor.
+- Restrict context menus by area so terminal toolbar/file lists do not show unnecessary menus.
+- Keep terminal session copy in the current editor group instead of opening a side-by-side split.
+- Replace the server row triangle marker with a compact server icon.
+- Add a copy-only context menu for the file transfer operation log.
+
 ## 0.1.4
 
 - Support private key SSH login, including optional encrypted private key passphrases.

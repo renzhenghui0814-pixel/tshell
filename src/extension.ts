@@ -525,6 +525,9 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
     .server.selected .server-meta { color: var(--vscode-list-activeSelectionForeground); opacity: .86; }
     .server:focus-within { background: var(--vscode-list-focusBackground, var(--vscode-list-hoverBackground)); }
     .server-main { min-width: 0; cursor: pointer; }
+    .server-icon { position: relative; width: 14px; height: 16px; border: 1.4px solid currentColor; border-radius: 3px; opacity: .9; }
+    .server-icon::before { content: ''; position: absolute; left: 2px; right: 2px; top: 5px; border-top: 1px solid currentColor; opacity: .75; }
+    .server-icon::after { content: ''; position: absolute; right: 2px; bottom: 2px; width: 3px; height: 3px; border-radius: 50%; background: currentColor; opacity: .85; }
     .server-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .server-meta { color: var(--vscode-descriptionForeground); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .actions-inline { display: inline-flex; gap: 2px; justify-content: flex-end; }
@@ -761,7 +764,8 @@ class ServerManagerViewProvider implements vscode.WebviewViewProvider {
           row.tabIndex = 0;
           if (selectedServerId === server.id) row.classList.add('selected');
           const icon = document.createElement('span');
-          icon.textContent = '▸';
+          icon.className = 'server-icon';
+          icon.title = server.name || server.host;
           const main = document.createElement('div');
           main.className = 'server-main';
           main.title = text('doubleClickConnect');
@@ -964,7 +968,7 @@ class TerminalPage {
   }
 
   private copySession(): void {
-    new TerminalPage(this.context, this.server, this.auth, this.settings, vscode.ViewColumn.Beside, TerminalPage.nextTitle(this.baseTitle));
+    new TerminalPage(this.context, this.server, this.auth, this.settings, this.panel.viewColumn ?? vscode.ViewColumn.One, TerminalPage.nextTitle(this.baseTitle));
   }
 
   private static nextTitle(baseTitle: string): string {
@@ -1006,6 +1010,12 @@ class TerminalPage {
           break;
         case 'renameSession':
           await this.renameSession();
+          break;
+        case 'copyText':
+          await vscode.env.clipboard.writeText(String(message.text ?? ''));
+          break;
+        case 'readClipboard':
+          this.post({ type: 'clipboardText', text: await vscode.env.clipboard.readText() });
           break;
       }
     } catch (error) {
@@ -1115,8 +1125,6 @@ class TerminalPage {
     const xtermCss = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'xterm', 'css', 'xterm.css'));
     const fitJs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', '@xterm', 'addon-fit', 'lib', 'addon-fit.js'));
     const fileTransferText = t(this.settings.language, 'fileTransfer');
-    const copySessionText = t(this.settings.language, 'copySession');
-    const renameSessionText = t(this.settings.language, 'renameSession');
     const readyText = t(this.settings.language, 'readyConnect');
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1136,10 +1144,6 @@ class TerminalPage {
     #terminal { width: 100%; height: 100%; min-height: 0; padding: 0; background: var(--vscode-editor-background); overflow: hidden; }
     .xterm { height: 100%; }
     .xterm .xterm-viewport, .xterm .xterm-screen { background: var(--vscode-editor-background) !important; }
-    .context-menu { position: fixed; display: none; min-width: 150px; z-index: 20; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
-    .context-menu.open { display: block; }
-    .context-item { padding: 6px 10px; border-radius: 3px; cursor: pointer; user-select: none; }
-    .context-item:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
   </style>
 </head>
 <body>
@@ -1148,16 +1152,11 @@ class TerminalPage {
     <button id="transfer">${fileTransferText}</button>
   </div>
   <div id="terminal"></div>
-  <div id="contextMenu" class="context-menu" data-vscode-context='{"webviewSection":"terminal"}'>
-    <div id="copySession" class="context-item">${copySessionText}</div>
-    <div id="renameSession" class="context-item">${renameSessionText}</div>
-  </div>
   <script nonce="${nonce}" src="${xtermJs}"></script>
   <script nonce="${nonce}" src="${fitJs}"></script>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const terminalElement = document.getElementById('terminal');
-    const menu = document.getElementById('contextMenu');
     function terminalTheme() {
       const styles = getComputedStyle(document.body);
       const light = document.body.classList.contains('vscode-light');
@@ -1200,24 +1199,20 @@ class TerminalPage {
       if (event.target && event.target.id !== 'transfer') term.focus();
     });
     term.onData((data) => vscode.postMessage({ type: 'input', data }));
+    term.onSelectionChange(() => {
+      if (term.hasSelection()) {
+        vscode.postMessage({ type: 'copyText', text: term.getSelection() });
+      }
+    });
     document.getElementById('transfer').onclick = () => vscode.postMessage({ type: 'openTransfer' });
-    document.getElementById('copySession').onclick = () => {
-      menu.classList.remove('open');
-      vscode.postMessage({ type: 'copySession' });
-    };
-    document.getElementById('renameSession').onclick = () => {
-      menu.classList.remove('open');
-      vscode.postMessage({ type: 'renameSession' });
-    };
-    function hideMenu() { menu.classList.remove('open'); }
     document.body.addEventListener('contextmenu', (event) => {
       event.preventDefault();
-      menu.style.left = Math.min(event.clientX, window.innerWidth - 170) + 'px';
-      menu.style.top = Math.min(event.clientY, window.innerHeight - 42) + 'px';
-      menu.classList.add('open');
     });
-    document.body.addEventListener('click', hideMenu);
-    window.addEventListener('blur', hideMenu);
+    terminalElement.addEventListener('contextmenu', (event) => {
+      event.preventDefault();
+      term.focus();
+      vscode.postMessage({ type: 'readClipboard' });
+    });
     function resize() {
       fitAddon.fit();
       vscode.postMessage({ type: 'resize', cols: term.cols, rows: term.rows });
@@ -1234,6 +1229,7 @@ class TerminalPage {
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'output') term.write(message.data || '');
+      if (message.type === 'clipboardText' && message.text) vscode.postMessage({ type: 'input', data: message.text });
       if (message.type === 'status' || message.type === 'connected') document.getElementById('status').textContent = message.text || '';
       if (message.type === 'connected') {
         scheduleResize();
@@ -1308,6 +1304,9 @@ class TransferPage {
           break;
         case 'loadDbfChunk':
           await this.loadDbfChunk(String(message.path ?? ''), normalizePreviewEncoding(String(message.encoding ?? ''), this.server.encoding), Number(message.recordOffset) || 0);
+          break;
+        case 'copyText':
+          await vscode.env.clipboard.writeText(String(message.text ?? ''));
           break;
       }
     } catch (error) {
@@ -1833,6 +1832,10 @@ class TransferPage {
     .pickerbar { display: grid; grid-template-columns: minmax(160px, 1fr) auto; gap: 8px; padding: 8px; border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background); }
     .local-list { overflow: auto; }
     .picker-actions { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 8px; border-top: 1px solid var(--vscode-panel-border); }
+    .context-menu { position: fixed; display: none; z-index: 20; min-width: 120px; padding: 4px; border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border)); border-radius: 5px; color: var(--vscode-menu-foreground, var(--vscode-foreground)); background: var(--vscode-menu-background, var(--vscode-editor-background)); box-shadow: 0 8px 24px rgba(0,0,0,.28); }
+    .context-menu.open { display: block; }
+    .context-item { padding: 6px 10px; border-radius: 3px; cursor: pointer; user-select: none; white-space: nowrap; }
+    .context-item:hover { background: var(--vscode-menu-selectionBackground, var(--vscode-list-hoverBackground)); color: var(--vscode-menu-selectionForeground, var(--vscode-foreground)); }
   </style>
 </head>
 <body>
@@ -1862,6 +1865,9 @@ class TransferPage {
   </div>
   <div id="logResizer" class="log-resizer" title="${t(lang, 'resizeLog')}"></div>
   <div class="log" id="log"></div>
+  <div id="logContextMenu" class="context-menu">
+    <div id="copyLog" class="context-item">${t(lang, 'copy')}</div>
+  </div>
   <div id="uploadModal" class="modal">
     <div class="picker">
       <div class="pickerbar">
@@ -1898,7 +1904,16 @@ class TransferPage {
     let renderedPreviewLines = 0;
     let previewHighlightState = { blockComment: false };
     let csvTableMode = false;
+    const logMenu = $('logContextMenu');
     function post(type, payload = {}) { vscode.postMessage({ type, ...payload }); }
+    function hideLogMenu() { logMenu.classList.remove('open'); }
+    function selectedTextWithin(element) {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return '';
+      const range = selection.getRangeAt(0);
+      if (!element.contains(range.commonAncestorContainer)) return '';
+      return selection.toString();
+    }
     function applyPreviewFontSize() {
       $('code').style.setProperty('--preview-font-size', previewFontSize + 'px');
       $('previewFontSize').textContent = previewFontSize + 'px';
@@ -2385,6 +2400,28 @@ class TransferPage {
       post('uploadLocal', { paths: Array.from(selectedLocalPaths) });
       $('uploadModal').classList.remove('open');
     };
+    document.addEventListener('contextmenu', (event) => {
+      const target = event.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        hideLogMenu();
+        return;
+      }
+      event.preventDefault();
+      if ($('log').contains(target)) {
+        logMenu.style.left = Math.min(event.clientX, window.innerWidth - 140) + 'px';
+        logMenu.style.top = Math.min(event.clientY, window.innerHeight - 48) + 'px';
+        logMenu.classList.add('open');
+      } else {
+        hideLogMenu();
+      }
+    });
+    $('copyLog').onclick = () => {
+      const selected = selectedTextWithin($('log'));
+      post('copyText', { text: selected || $('log').textContent || '' });
+      hideLogMenu();
+    };
+    document.addEventListener('click', hideLogMenu);
+    window.addEventListener('blur', hideLogMenu);
     let resizingLog = false;
     $('logResizer').addEventListener('mousedown', () => { resizingLog = true; });
     window.addEventListener('mouseup', () => { resizingLog = false; });
@@ -2536,6 +2573,7 @@ function t(language: Language, key: string, arg?: string): string {
       textPreview: '文本预览',
       invalidDbfFile: '无效的 DBF 文件。',
       close: '关闭',
+      copy: '复制',
       copySession: '复制会话',
       renameSession: '修改会话名',
       sessionNamePrompt: '请输入新的会话标签名',
@@ -2599,6 +2637,7 @@ function t(language: Language, key: string, arg?: string): string {
       textPreview: 'Text Preview',
       invalidDbfFile: 'Invalid DBF file.',
       close: 'Close',
+      copy: 'Copy',
       copySession: 'Copy Session',
       renameSession: 'Rename Session',
       sessionNamePrompt: 'Enter a new session tab name',

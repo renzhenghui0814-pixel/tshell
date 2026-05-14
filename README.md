@@ -16,7 +16,8 @@ The extension only uses standard SSH and SFTP from the VS Code client side. It d
 - Configure Chinese/English UI and hidden file visibility from the JSON config file.
 - Open a server by double-clicking it in the SSH sidebar.
 - Use an xterm-based terminal page that supports ANSI colors, `clear`, `top`, and other interactive shell output.
-- Copy an active terminal session into a new terminal tab.
+- Select terminal text to copy it immediately, and right-click the terminal to paste clipboard text at the cursor.
+- Copy an active terminal session into a new tab in the same editor group.
 - Open a visual file transfer page from the terminal toolbar.
 - Browse remote folders, type a path and press Enter, refresh the current path, upload files/folders with the built-in local picker, and download files/folders.
 - Browse Windows drive roots such as `C:` and `D:` in the built-in upload picker.
@@ -26,6 +27,7 @@ The extension only uses standard SSH and SFTP from the VS Code client side. It d
 - Preview CSV and DBF files as tables with row numbers. DBF previews load progressively while scrolling.
 - Open each file preview from the top instead of restoring the previous preview scroll position.
 - Review upload/download history in the resizable file transfer operation log, including each file inside uploaded or downloaded folders.
+- Copy operation log text from a copy-only context menu.
 - Retry SSH/SFTP connections from the terminal with Enter or from the file transfer page with Refresh/path Enter after a disconnect.
 - Show remote file size and last modified time.
 
